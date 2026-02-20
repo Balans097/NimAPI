@@ -538,13 +538,13 @@ proc transformHyperlinks() =
 | `InlineTags` | константное множество | Множество строчных HTML-тегов |
 | `BlockTags` | константное множество | Множество блочных HTML-тегов |
 | `SingleTags` | константное множество | Множество void/самозакрывающихся тегов (без детей и закрывающего тега) |
-| `htmlTag(XmlNode)` | проц | Получить `HtmlTag` разобранного узла (кэшируется в `clientData`) |
-| `htmlTag(string)` | проц | Преобразовать строку имени тега в `HtmlTag` (без учёта регистра) |
-| `runeToEntity` | проц | Преобразовать `Rune` → числовую HTML-сущность (`#NNN`) |
-| `entityToRune` | проц | Преобразовать имя или ссылку HTML-сущности → `Rune` |
-| `entityToUtf8` | проц | Преобразовать имя или ссылку HTML-сущности → UTF-8 строку |
-| `parseHtml(Stream, string, var seq)` | проц | Разобрать HTML из потока; собирать ошибки в seq |
-| `parseHtml(Stream)` | проц | Разобрать HTML из потока; игнорировать ошибки |
-| `parseHtml(string)` | проц | Разобрать HTML из строки; игнорировать ошибки |
-| `loadHtml(string, var seq)` | проц | Загрузить и разобрать HTML-файл; собирать ошибки |
-| `loadHtml(string)` | проц | Загрузить и разобрать HTML-файл; игнорировать ошибки |
+| `htmlTag(XmlNode)` | proc | Получить `HtmlTag` разобранного узла (кэшируется в `clientData`) |
+| `htmlTag(string)` | proc | Преобразовать строку имени тега в `HtmlTag` (без учёта регистра) |
+| `runeToEntity` | proc | Преобразовать `Rune` → числовую HTML-сущность (`#NNN`) |
+| `entityToRune` | proc | Преобразовать имя или ссылку HTML-сущности → `Rune` |
+| `entityToUtf8` | proc | Преобразовать имя или ссылку HTML-сущности → UTF-8 строку |
+| `parseHtml(Stream, string, var seq)` | proc | Разобрать HTML из потока; собирать ошибки в seq |
+| `parseHtml(Stream)` | proc | Разобрать HTML из потока; игнорировать ошибки |
+| `parseHtml(string)` | proc | Разобрать HTML из строки; игнорировать ошибки |
+| `loadHtml(string, var seq)` | proc | Загрузить и разобрать HTML-файл; собирать ошибки |
+| `loadHtml(string)` | proc | Загрузить и разобрать HTML-файл; игнорировать ошибки |
