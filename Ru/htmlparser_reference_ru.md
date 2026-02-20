@@ -1,372 +1,438 @@
-# Справочник модуля `htmlparser` (Nim)
+# Модуль Nim `std/htmlparser` — Полный справочник
 
-> Модуль стандартной библиотеки Nim для разбора «живого» HTML.  
-> Парсит неидеальный HTML-код и возвращает дерево `XmlNode`.
+> **Установка:** `nimble install htmlparser`
 >
-> ⚠️ **Устаревший модуль.** С текущей версии помечен как `deprecated`.  
-> Рекомендуется установить: `nimble install htmlparser` и импортировать `pkg/htmlparser`.
+> Парсер HTML, устойчивый к «дикому» реальному HTML. Строит дерево `XmlNode`, совместимое с `std/xmltree`.  
+> Парсер ориентирован на браузерное восстановление после ошибок, а не на строгое соответствие стандарту. Поведение может измениться в будущих версиях по мере уточнения понятия «дикий HTML».
 
 ---
 
 ## Содержание
 
-1. [Обзор и принцип работы](#обзор-и-принцип-работы)
-2. [Типы и константы](#типы-и-константы)
-3. [Парсинг HTML](#парсинг-html)
-   - [parseHtml (Stream + ошибки)](#parsehtmls-stream-filename-string-errors-var-seqstring-xmlnode)
-   - [parseHtml (Stream)](#parsehtmls-stream-xmlnode)
-   - [parseHtml (строка)](#parsehtmlhtml-string-xmlnode)
-   - [loadHtml (файл + ошибки)](#loadhtmlpath-string-errors-var-seqstring-xmlnode)
-   - [loadHtml (файл)](#loadhtmlpath-string-xmlnode)
-4. [Работа с тегами](#работа-с-тегами)
-   - [htmlTag (XmlNode)](#htmltagnxmlnode-htmltag)
-   - [htmlTag (строка)](#htmltags-string-htmltag)
-5. [Работа с HTML-сущностями](#работа-с-html-сущностями)
-   - [runeToEntity](#runetoentityrune-rune-string)
-   - [entityToRune](#entitytoruneentity-string-rune)
-   - [entityToUtf8](#entitytoutf8entity-string-string)
-6. [Константа `tagToStr`](#константа-tagtostr)
-7. [Перечисление `HtmlTag`](#перечисление-htmltag)
-8. [Практические примеры](#практические-примеры)
-9. [Быстрая шпаргалка](#быстрая-шпаргалка)
+1. [Обзор](#обзор)
+2. [Типы](#типы)
+3. [Константы](#константы)
+4. [Идентификация тегов](#идентификация-тегов)
+5. [Преобразование HTML-сущностей](#преобразование-html-сущностей)
+6. [Разбор HTML](#разбор-html)
+7. [Загрузка из файла](#загрузка-из-файла)
+8. [Работа с результирующим деревом](#работа-с-результирующим-деревом)
+9. [Перечисление HtmlTag — полный список](#перечисление-htmltag--полный-список)
+10. [Таблица быстрого доступа](#таблица-быстрого-доступа)
 
 ---
 
-## Обзор и принцип работы
+## Обзор
 
-Модуль `htmlparser` разбирает HTML-документы с любым количеством ошибок и возвращает дерево `XmlNode` из модуля `std/xmltree`. Все теги в результирующем дереве приводятся к **нижнему регистру**.
-
-Результирующий `XmlNode` использует поле `clientData` внутри модуля — клиентский код не должен его модифицировать.
+`std/htmlparser` читает HTML из строки, потока или файла и возвращает дерево `XmlNode`. Поскольку парсер намеренно снисходителен, он справляется с HTML, который отклонили бы строгие XML-парсеры: незакрытые теги, атрибуты без кавычек, пустые атрибуты и прочее.
 
 ```nim
 import std/htmlparser
 import std/xmltree
 
-let html = parseHtml("<html><body><p>Привет!</p></body></html>")
-echo html  # выведет нормализованный XML
+# Разбор строки HTML
+let tree = parseHtml("<h1>Привет <b>Мир</b></h1>")
+echo tree   # → <h1>Привет <b>Мир</b></h1>
+
+# Загрузка файла и вывод как XHTML
+echo loadHtml("page.html")
 ```
+
+> **Замечание:** Все имена тегов в результирующем дереве — **строчными буквами**.  
+> **Замечание:** Поле `clientData` каждого `XmlNode` используется парсером для кэширования значений `HtmlTag`. Не используйте `clientData` самостоятельно.
 
 ---
 
-## Типы и константы
+## Типы
 
 ### `HtmlTag`
 
 ```nim
 type HtmlTag* = enum
-  tagUnknown, tagA, tagAbbr, tagAcronym, tagAddress, ...
+  tagUnknown,     ## Любой тег, не входящий в список известных
+  tagA,           ## <a>
+  tagAbbr,        ## <abbr>
+  tagAcronym,     ## <acronym>
+  tagAddress,     ## <address>
+  # … (полный список — в конце документа)
+  tagWbr          ## <wbr>
 ```
 
-Перечисление всех поддерживаемых HTML-тегов в алфавитном порядке. Включает как актуальные, так и устаревшие теги (помечены в документации как `deprecated`).
+Перечисление, охватывающее все известные парсеру HTML-теги в алфавитном порядке. Используется для идентификации тегов в разобранном дереве без хрупких строковых сравнений.
 
-Специальные значения:
-- `tagUnknown` — неизвестный или нераспознанный тег
+```nim
+import std/htmlparser, std/xmltree
+
+let tree = parseHtml("<p>Привет</p>")
+for node in tree:
+  if node.kind == xnElement and node.htmlTag == tagP:
+    echo "Найден абзац: ", node
+```
+
+---
+
+## Константы
 
 ### `tagToStr`
 
 ```nim
-const tagToStr* = ["a", "abbr", "acronym", ...]
+const tagToStr*: array[…, string]
 ```
 
-Массив строк, сопоставленный с `HtmlTag` (начиная с `tagA`). Позволяет получить строковое имя тега по его значению перечисления.
+Отображает каждое значение перечисления `HtmlTag` (начиная с `tagA`) на строчное имя HTML-тега. Используется для обратного преобразования значений перечисления в строки.
 
 ```nim
-echo tagToStr[tagDiv.ord - 1]  # "div"
+echo tagToStr[tagA.ord - 1]    # → "a"
+echo tagToStr[tagDiv.ord - 1]  # → "div"
 ```
 
-> Индексация начинается с `tagA` (индекс 0 соответствует `tagA`, а не `tagUnknown`).
+> **Замечание:** Массив начинается с `tagA` (индекс 0). Для `tagUnknown` записи нет.
 
 ---
 
-## Парсинг HTML
+### `InlineTags`
 
-### `parseHtml(s: Stream, filename: string, errors: var seq[string]): XmlNode`
+```nim
+const InlineTags*: set[HtmlTag]
+```
+
+Множество всех HTML-тегов, считающихся **строчными** элементами (размещаются в потоке текста). Включает: `a`, `abbr`, `acronym`, `applet`, `b`, `basefont`, `bdo`, `big`, `br`, `button`, `cite`, `code`, `del`, `dfn`, `em`, `font`, `i`, `img`, `ins`, `input`, `iframe`, `kbd`, `label`, `map`, `object`, `q`, `s`, `samp`, `script`, `select`, `small`, `span`, `strike`, `strong`, `sub`, `sup`, `textarea`, `tt`, `u`, `var`, `wbr`.
+
+```nim
+if node.htmlTag in InlineTags:
+  echo node.tag, " — строчный элемент"
+```
+
+---
+
+### `BlockTags`
+
+```nim
+const BlockTags*: set[HtmlTag]
+```
+
+Множество всех HTML-тегов, считающихся **блочными** элементами. Включает: `address`, `blockquote`, `center`, `del`, `dir`, `div`, `dl`, `fieldset`, `form`, `h1`–`h6`, `hr`, `ins`, `isindex`, `menu`, `noframes`, `noscript`, `ol`, `p`, `pre`, `table`, `ul`.
+
+```nim
+if node.htmlTag in BlockTags:
+  echo node.tag, " — блочный элемент"
+```
+
+---
+
+### `SingleTags`
+
+```nim
+const SingleTags*: set[HtmlTag]
+```
+
+Множество **пустых (void) / самозакрывающихся** тегов, которые никогда не имеют дочерних элементов. Парсер не ожидает закрывающего тега для них. Включает: `area`, `base`, `basefont`, `br`, `col`, `frame`, `hr`, `img`, `isindex`, `link`, `meta`, `param`, `source`, `wbr`.
+
+```nim
+if node.htmlTag in SingleTags:
+  echo node.tag, " — void-элемент (закрывающий тег не нужен)"
+```
+
+---
+
+## Идентификация тегов
+
+### `htmlTag(n: XmlNode)`
+
+```nim
+proc htmlTag*(n: XmlNode): HtmlTag
+```
+
+Возвращает значение перечисления `HtmlTag` для разобранного `XmlNode`. Результат кэшируется в `n.clientData` после первого вызова, поэтому повторные вызовы не требуют накладных расходов.
+
+```nim
+import std/htmlparser, std/xmltree
+
+let tree = parseHtml("<div><p>текст</p></div>")
+for node in tree:
+  case node.htmlTag
+  of tagDiv: echo "найден div"
+  of tagP:   echo "найден абзац"
+  else: discard
+```
+
+---
+
+### `htmlTag(s: string)`
+
+```nim
+proc htmlTag*(s: string): HtmlTag
+```
+
+Преобразует произвольную строку в соответствующее значение `HtmlTag`. Сравнение **нечувствительно к регистру**. Возвращает `tagUnknown`, если строка не является известным HTML-тегом.
+
+```nim
+echo htmlTag("DIV")    # → tagDiv
+echo htmlTag("span")   # → tagSpan
+echo htmlTag("foobar") # → tagUnknown
+```
+
+---
+
+## Преобразование HTML-сущностей
+
+### `runeToEntity`
+
+```nim
+proc runeToEntity*(rune: Rune): string
+```
+
+Преобразует Unicode `Rune` в строку с **числовой HTML-сущностью** (формат `#NNN`). Возвращает `""` для `Rune(0)` и любого отрицательного руна.
+
+```nim
+import std/unicode, std/htmlparser
+
+echo runeToEntity(Rune(0))           # → ""
+echo runeToEntity(Rune(-1))          # → ""
+echo runeToEntity("Ü".runeAt(0))    # → "#220"
+echo runeToEntity("∈".runeAt(0))    # → "#8712"
+```
+
+---
+
+### `entityToRune`
+
+```nim
+proc entityToRune*(entity: string): Rune
+```
+
+Преобразует имя HTML-сущности или числовую ссылку в `Rune`. Возвращает `Rune(0)` для неизвестных или некорректных сущностей.
+
+Поддерживаемые форматы:
+- Именованные сущности: `"gt"`, `"Uuml"`, `"amp"`, `"Sigma"` и т. д.
+- Десятичные числовые: `"#63"`, `"#931"`, `"#0931"`
+- Шестнадцатеричные числовые: `"#x3A3"`, `"#x03A3"`, `"#X3a3"` (`x` нечувствительно к регистру)
+
+Разделители `&` и `;` **не включаются** — передавайте только содержимое между ними.
+
+```nim
+import std/unicode, std/htmlparser
+
+echo entityToRune("")        # → Rune(0)
+echo entityToRune("gt")      # → Rune('>')
+echo entityToRune("Uuml")    # → Rune('Ü')
+echo entityToRune("#63")     # → Rune('?')
+echo entityToRune("#x3A3")   # → Rune('Σ')
+```
+
+---
+
+### `entityToUtf8`
+
+```nim
+proc entityToUtf8*(entity: string): string
+```
+
+Преобразует имя HTML-сущности или числовую ссылку в **UTF-8 строку**. Возвращает `""` для неизвестных сущностей. Это удобная обёртка над `entityToRune` + `toUTF8`.
+
+Парсер HTML автоматически применяет это преобразование во время разбора; используйте эту функцию, когда нужно декодировать сущности вручную.
+
+```nim
+echo entityToUtf8("")        # → ""
+echo entityToUtf8("gt")      # → ">"
+echo entityToUtf8("Uuml")    # → "Ü"
+echo entityToUtf8("quest")   # → "?"
+echo entityToUtf8("#63")     # → "?"
+echo entityToUtf8("#931")    # → "Σ"
+echo entityToUtf8("#x3A3")   # → "Σ"
+echo entityToUtf8("#X3a3")   # → "Σ"
+```
+
+---
+
+## Разбор HTML
+
+### `parseHtml(s, filename, errors)`
 
 ```nim
 proc parseHtml*(s: Stream, filename: string,
                 errors: var seq[string]): XmlNode
 ```
 
-Парсит HTML из потока `s`. Имя файла `filename` используется в сообщениях об ошибках. Все ошибки парсинга добавляются в список `errors`.
+Разбирает HTML из открытого потока `s`. Параметр `filename` используется только в сообщениях об ошибках. Каждая восстановимая ошибка разбора добавляется строкой в `errors`.
 
-**Параметры:**
-- `s` — входной поток (`Stream`) с HTML-содержимым
-- `filename` — имя файла (для диагностики)
-- `errors` — изменяемый список строк, куда записываются ошибки
-
-**Возвращает:** корневой `XmlNode` документа.
+Возвращает корневой `XmlNode` разобранного документа. Если документ содержит единственный корневой элемент — он возвращается напрямую; в противном случае возвращается синтетический элемент-обёртка `"document"`.
 
 ```nim
-import std/[htmlparser, xmltree, streams]
+import std/streams, std/htmlparser
 
-var errors: seq[string] = @[]
-let stream = newStringStream("<html><body><p>Текст</p></body></html>")
-let doc = parseHtml(stream, "test.html", errors)
-
-if errors.len > 0:
-  for e in errors:
-    echo "Ошибка: ", e
-else:
-  echo "Парсинг успешен"
-
-echo doc
+var errors: seq[string]
+let s = newStringStream("<p>Привет <b>Мир")
+let tree = parseHtml(s, "my_doc.html", errors)
+for e in errors: echo "Ошибка разбора: ", e
+echo tree
 ```
 
 ---
 
-### `parseHtml(s: Stream): XmlNode`
+### `parseHtml(s: Stream)`
 
 ```nim
 proc parseHtml*(s: Stream): XmlNode
 ```
 
-Упрощённая версия: парсит HTML из потока, игнорируя все ошибки. Внутри использует имя `"unknown_html_doc"`.
+Разбирает HTML из потока, молча отбрасывая все ошибки разбора.
 
 ```nim
-import std/[htmlparser, streams]
+import std/streams, std/htmlparser
 
-let s = newStringStream("<div class='box'><p>Hello</p></div>")
-let doc = parseHtml(s)
-echo doc
+let tree = parseHtml(newStringStream("<ul><li>A<li>B<li>C"))
+echo tree
 ```
 
 ---
 
-### `parseHtml(html: string): XmlNode`
+### `parseHtml(html: string)`
 
 ```nim
 proc parseHtml*(html: string): XmlNode
 ```
 
-Самый удобный вариант: принимает HTML прямо в виде строки, ошибки игнорируются.
+Разбирает HTML непосредственно из строки. Все ошибки разбора игнорируются. Это наиболее удобная перегрузка для быстрого использования.
 
 ```nim
-import std/htmlparser
+import std/htmlparser, std/xmltree
 
-let doc = parseHtml("""
+let tree = parseHtml("""
   <html>
-    <head><title>Тест</title></head>
     <body>
       <h1>Заголовок</h1>
-      <p>Параграф с <b>жирным</b> текстом.</p>
+      <p>Абзац со <a href="https://nim-lang.org">ссылкой</a>.</p>
     </body>
   </html>
 """)
 
-echo doc
+for a in tree.findAll("a"):
+  echo a.attrs["href"]
+# → https://nim-lang.org
 ```
 
 ---
 
-### `loadHtml(path: string, errors: var seq[string]): XmlNode`
+## Загрузка из файла
+
+### `loadHtml(path, errors)`
 
 ```nim
 proc loadHtml*(path: string, errors: var seq[string]): XmlNode
 ```
 
-Загружает HTML из файла по пути `path` и парсит его. Ошибки парсинга добавляются в `errors`. Если файл не найден — выбрасывает `IOError`.
-
-**Параметры:**
-- `path` — путь к HTML-файлу
-- `errors` — список для сбора ошибок парсинга
+Открывает файл по пути `path`, разбирает его HTML-содержимое и возвращает дерево `XmlNode`. Каждая ошибка разбора добавляется в `errors`. Бросает `IOError`, если файл не удаётся открыть.
 
 ```nim
 import std/htmlparser
 
-var errors: seq[string] = @[]
-let doc = loadHtml("index.html", errors)
-
-for e in errors:
-  echo "Предупреждение: ", e
-
-echo "Документ загружен"
+var errors: seq[string]
+let tree = loadHtml("page.html", errors)
+if errors.len > 0:
+  echo "Предупреждения при разборе:"
+  for e in errors: echo "  ", e
+echo tree
 ```
 
 ---
 
-### `loadHtml(path: string): XmlNode`
+### `loadHtml(path: string)`
 
 ```nim
 proc loadHtml*(path: string): XmlNode
 ```
 
-Упрощённый вариант: загружает HTML из файла, игнорируя все ошибки.
+Открывает и разбирает HTML-файл, игнорируя все ошибки разбора. Бросает `IOError`, если файл не удаётся прочитать.
 
 ```nim
 import std/htmlparser
-
-let doc = loadHtml("page.html")
-echo doc
+echo loadHtml("mydirty.html")
 ```
 
 ---
 
-## Работа с тегами
+## Работа с результирующим деревом
 
-### `htmlTag(n: XmlNode): HtmlTag`
-
-```nim
-proc htmlTag*(n: XmlNode): HtmlTag
-```
-
-Возвращает тег узла `n` как значение перечисления `HtmlTag`. Результат кешируется в `clientData` узла для ускорения повторных вызовов.
+Возвращаемый `XmlNode` — стандартный узел `std/xmltree`. Все процедуры `xmltree` работают с ним в обычном режиме.
 
 ```nim
-import std/[htmlparser, xmltree]
+import std/htmlparser, std/xmltree, std/strtabs
 
-let doc = parseHtml("<div><p>Текст</p></div>")
-for node in doc:
+let tree = parseHtml("""
+  <html><body>
+    <a href="page.rst">ReST страница</a>
+    <a href="other.html">HTML страница</a>
+  </body></html>
+""")
+
+# Обход всех тегов <a>
+for a in tree.findAll("a"):
+  echo a.attrs.getOrDefault("href", "(нет href)")
+
+# Проверка через HtmlTag
+for node in tree:
   if node.kind == xnElement:
-    case node.htmlTag
-    of tagDiv: echo "Нашли div"
-    of tagP:   echo "Нашли параграф"
-    else: discard
+    echo node.tag, " → ", node.htmlTag
+
+# Модификация атрибутов
+for a in tree.findAll("a"):
+  if a.attrs.hasKey("href") and a.attrs["href"].endsWith(".rst"):
+    a.attrs["href"] = a.attrs["href"][0..^5] & ".html"
+
+# Сериализация обратно в строку HTML
+echo $tree
+```
+
+### Практический пример — преобразование гиперссылок
+
+```nim
+import std/htmlparser, std/xmltree, std/strtabs, std/os, std/strutils
+
+proc transformHyperlinks() =
+  let html = loadHtml("input.html")
+
+  for a in html.findAll("a"):
+    if a.attrs.hasKey("href"):
+      let (dir, filename, ext) = splitFile(a.attrs["href"])
+      if cmpIgnoreCase(ext, ".rst") == 0:
+        a.attrs["href"] = dir / filename & ".html"
+
+  writeFile("output.html", $html)
 ```
 
 ---
 
-### `htmlTag(s: string): HtmlTag`
-
-```nim
-proc htmlTag*(s: string): HtmlTag
-```
-
-Конвертирует строку `s` в значение `HtmlTag`. Нечувствителен к регистру. Если тег не распознан — возвращает `tagUnknown`.
-
-```nim
-import std/htmlparser
-
-echo htmlTag("div")     # tagDiv
-echo htmlTag("DIV")     # tagDiv (регистронезависимо)
-echo htmlTag("p")       # tagP
-echo htmlTag("custom")  # tagUnknown
-```
-
----
-
-## Работа с HTML-сущностями
-
-### `runeToEntity(rune: Rune): string`
-
-```nim
-proc runeToEntity*(rune: Rune): string
-```
-
-Конвертирует символ Unicode (`Rune`) в числовую HTML-сущность вида `#N`.  
-Возвращает пустую строку, если `rune.ord <= 0`.
-
-```nim
-import std/[htmlparser, unicode]
-
-echo runeToEntity(Rune(0))         # ""
-echo runeToEntity(Rune(-1))        # ""
-echo runeToEntity("Ü".runeAt(0))   # "#220"
-echo runeToEntity("∈".runeAt(0))   # "#8712"
-echo runeToEntity("©".runeAt(0))   # "#169"
-```
-
-**Применение:** экранирование символов перед вставкой в HTML-документ.
-
-```nim
-import std/[htmlparser, unicode]
-
-proc escapeChar(c: char): string =
-  let r = Rune(c.ord)
-  let entity = runeToEntity(r)
-  if entity.len > 0: "&" & entity & ";"
-  else: $c
-```
-
----
-
-### `entityToRune(entity: string): Rune`
-
-```nim
-proc entityToRune*(entity: string): Rune
-```
-
-Конвертирует имя HTML-сущности или числовой код в `Rune` (кодовую точку Unicode).  
-Возвращает `Rune(0)` если сущность неизвестна.
-
-**Поддерживаемые форматы входной строки** (без окружающих `&` и `;`):
-- Именованная: `"Uuml"`, `"gt"`, `"amp"`, `"quest"` и т.д.
-- Десятичная: `"#220"`, `"#63"`
-- Шестнадцатеричная: `"#x000DC"`, `"#X3a3"` (нечувствительно к регистру `x`)
-
-```nim
-import std/[htmlparser, unicode]
-
-echo entityToRune("")        # Rune(0) — слишком коротко
-echo entityToRune("a")       # Rune(0) — неизвестно
-echo entityToRune("gt")      # '>'.runeAt(0)
-echo entityToRune("Uuml")    # 'Ü'.runeAt(0)
-echo entityToRune("quest")   # '?'.runeAt(0)
-echo entityToRune("#63")     # '?'.runeAt(0)
-echo entityToRune("#x003F")  # '?'.runeAt(0)
-```
-
----
-
-### `entityToUtf8(entity: string): string`
-
-```nim
-proc entityToUtf8*(entity: string): string
-```
-
-Конвертирует HTML-сущность в строку UTF-8. Это надстройка над `entityToRune` — удобна там, где нужна строка, а не кодовая точка.  
-Возвращает `""` если сущность неизвестна.
-
-> **Примечание:** HTML-парсер уже автоматически преобразует сущности в UTF-8 при парсинге. Эта функция нужна для ручного декодирования.
-
-```nim
-import std/htmlparser
-
-echo entityToUtf8("")       # ""
-echo entityToUtf8("a")      # ""
-echo entityToUtf8("gt")     # ">"
-echo entityToUtf8("Uuml")   # "Ü"
-echo entityToUtf8("quest")  # "?"
-echo entityToUtf8("#63")    # "?"
-echo entityToUtf8("Sigma")  # "Σ"
-echo entityToUtf8("#931")   # "Σ"
-echo entityToUtf8("#x3A3")  # "Σ"
-echo entityToUtf8("#X3a3")  # "Σ"
-```
-
----
-
-## Перечисление `HtmlTag`
-
-Полный список значений `HtmlTag` (алфавитный порядок):
+## Перечисление HtmlTag — полный список
 
 | Значение | HTML-тег | Примечание |
-|----------|----------|------------|
-| `tagUnknown` | — | Неизвестный тег |
+|---|---|---|
+| `tagUnknown` | *(любой неизвестный тег)* | |
 | `tagA` | `<a>` | |
-| `tagAbbr` | `<abbr>` | Устарел |
+| `tagAbbr` | `<abbr>` | устаревший по комментарию в модуле |
 | `tagAcronym` | `<acronym>` | |
 | `tagAddress` | `<address>` | |
-| `tagApplet` | `<applet>` | Устарел |
-| `tagArea` | `<area>` | |
+| `tagApplet` | `<applet>` | устаревший |
+| `tagArea` | `<area>` | void |
 | `tagArticle` | `<article>` | |
 | `tagAside` | `<aside>` | |
 | `tagAudio` | `<audio>` | |
 | `tagB` | `<b>` | |
-| `tagBase` | `<base>` | |
+| `tagBase` | `<base>` | void |
 | `tagBdi` | `<bdi>` | |
-| `tagBdo` | `<bdo>` | Устарел |
-| `tagBasefont` | `<basefont>` | Устарел |
+| `tagBdo` | `<bdo>` | устаревший по комментарию в модуле |
+| `tagBasefont` | `<basefont>` | устаревший, void |
 | `tagBig` | `<big>` | |
 | `tagBlockquote` | `<blockquote>` | |
 | `tagBody` | `<body>` | |
-| `tagBr` | `<br>` | |
+| `tagBr` | `<br>` | void |
 | `tagButton` | `<button>` | |
 | `tagCanvas` | `<canvas>` | |
 | `tagCaption` | `<caption>` | |
-| `tagCenter` | `<center>` | Устарел |
+| `tagCenter` | `<center>` | устаревший |
 | `tagCite` | `<cite>` | |
 | `tagCode` | `<code>` | |
-| `tagCol` | `<col>` | |
+| `tagCol` | `<col>` | void |
 | `tagColgroup` | `<colgroup>` | |
 | `tagCommand` | `<command>` | |
 | `tagDatalist` | `<datalist>` | |
@@ -376,7 +442,7 @@ echo entityToUtf8("#X3a3")  # "Σ"
 | `tagDfn` | `<dfn>` | |
 | `tagDialog` | `<dialog>` | |
 | `tagDiv` | `<div>` | |
-| `tagDir` | `<dir>` | Устарел |
+| `tagDir` | `<dir>` | устаревший |
 | `tagDl` | `<dl>` | |
 | `tagDt` | `<dt>` | |
 | `tagEm` | `<em>` | |
@@ -384,60 +450,60 @@ echo entityToUtf8("#X3a3")  # "Σ"
 | `tagFieldset` | `<fieldset>` | |
 | `tagFigcaption` | `<figcaption>` | |
 | `tagFigure` | `<figure>` | |
-| `tagFont` | `<font>` | Устарел |
+| `tagFont` | `<font>` | устаревший |
 | `tagFooter` | `<footer>` | |
 | `tagForm` | `<form>` | |
-| `tagFrame` | `<frame>` | |
-| `tagFrameset` | `<frameset>` | Устарел |
+| `tagFrame` | `<frame>` | void |
+| `tagFrameset` | `<frameset>` | устаревший |
 | `tagH1`–`tagH6` | `<h1>`–`<h6>` | |
 | `tagHead` | `<head>` | |
 | `tagHeader` | `<header>` | |
 | `tagHgroup` | `<hgroup>` | |
 | `tagHtml` | `<html>` | |
-| `tagHr` | `<hr>` | |
+| `tagHr` | `<hr>` | void |
 | `tagI` | `<i>` | |
-| `tagIframe` | `<iframe>` | Устарел |
-| `tagImg` | `<img>` | |
-| `tagInput` | `<input>` | |
+| `tagIframe` | `<iframe>` | устаревший по комментарию в модуле |
+| `tagImg` | `<img>` | void |
+| `tagInput` | `<input>` | void |
 | `tagIns` | `<ins>` | |
-| `tagIsindex` | `<isindex>` | Устарел |
+| `tagIsindex` | `<isindex>` | устаревший, void |
 | `tagKbd` | `<kbd>` | |
 | `tagKeygen` | `<keygen>` | |
 | `tagLabel` | `<label>` | |
 | `tagLegend` | `<legend>` | |
 | `tagLi` | `<li>` | |
-| `tagLink` | `<link>` | |
+| `tagLink` | `<link>` | void |
 | `tagMap` | `<map>` | |
 | `tagMark` | `<mark>` | |
-| `tagMenu` | `<menu>` | Устарел |
-| `tagMeta` | `<meta>` | |
+| `tagMenu` | `<menu>` | устаревший |
+| `tagMeta` | `<meta>` | void |
 | `tagMeter` | `<meter>` | |
 | `tagNav` | `<nav>` | |
-| `tagNobr` | `<nobr>` | Устарел |
-| `tagNoframes` | `<noframes>` | Устарел |
+| `tagNobr` | `<nobr>` | устаревший |
+| `tagNoframes` | `<noframes>` | устаревший |
 | `tagNoscript` | `<noscript>` | |
 | `tagObject` | `<object>` | |
 | `tagOl` | `<ol>` | |
 | `tagOptgroup` | `<optgroup>` | |
 | `tagOption` | `<option>` | |
-| `tagOutput` | `<output>` | |
+| `tagOutput` | `<o>` | |
 | `tagP` | `<p>` | |
-| `tagParam` | `<param>` | |
+| `tagParam` | `<param>` | void |
 | `tagPre` | `<pre>` | |
 | `tagProgress` | `<progress>` | |
 | `tagQ` | `<q>` | |
 | `tagRp` | `<rp>` | |
 | `tagRt` | `<rt>` | |
 | `tagRuby` | `<ruby>` | |
-| `tagS` | `<s>` | Устарел |
+| `tagS` | `<s>` | устаревший |
 | `tagSamp` | `<samp>` | |
 | `tagScript` | `<script>` | |
 | `tagSection` | `<section>` | |
 | `tagSelect` | `<select>` | |
 | `tagSmall` | `<small>` | |
-| `tagSource` | `<source>` | |
+| `tagSource` | `<source>` | void |
 | `tagSpan` | `<span>` | |
-| `tagStrike` | `<strike>` | Устарел |
+| `tagStrike` | `<strike>` | устаревший |
 | `tagStrong` | `<strong>` | |
 | `tagStyle` | `<style>` | |
 | `tagSub` | `<sub>` | |
@@ -455,161 +521,30 @@ echo entityToUtf8("#X3a3")  # "Σ"
 | `tagTr` | `<tr>` | |
 | `tagTrack` | `<track>` | |
 | `tagTt` | `<tt>` | |
-| `tagU` | `<u>` | Устарел |
+| `tagU` | `<u>` | устаревший |
 | `tagUl` | `<ul>` | |
 | `tagVar` | `<var>` | |
 | `tagVideo` | `<video>` | |
-| `tagWbr` | `<wbr>` | |
+| `tagWbr` | `<wbr>` | void |
 
 ---
 
-## Практические примеры
+## Таблица быстрого доступа
 
-### Пример 1: Извлечение всех ссылок
-
-```nim
-import std/[htmlparser, xmltree, strtabs]
-
-let html = loadHtml("page.html")
-
-for a in html.findAll("a"):
-  if a.attrs != nil and a.attrs.hasKey("href"):
-    echo a.attrs["href"]
-```
-
----
-
-### Пример 2: Замена расширений в ссылках (из документации)
-
-```nim
-import std/[htmlparser, xmltree, strtabs, os, strutils]
-
-proc transformHyperlinks() =
-  let html = loadHtml("input.html")
-
-  for a in html.findAll("a"):
-    if a.attrs != nil and a.attrs.hasKey("href"):
-      let (dir, filename, ext) = splitFile(a.attrs["href"])
-      if cmpIgnoreCase(ext, ".rst") == 0:
-        a.attrs["href"] = dir / filename & ".html"
-
-  writeFile("output.html", $html)
-
-transformHyperlinks()
-```
-
----
-
-### Пример 3: Фильтрация по типу тега с `HtmlTag`
-
-```nim
-import std/[htmlparser, xmltree]
-
-let doc = parseHtml("""
-  <html><body>
-    <h1>Заголовок</h1>
-    <p>Параграф 1</p>
-    <p>Параграф 2</p>
-    <ul>
-      <li>Пункт 1</li>
-      <li>Пункт 2</li>
-    </ul>
-  </body></html>
-""")
-
-proc collectByTag(node: XmlNode, tag: HtmlTag, result: var seq[XmlNode]) =
-  if node.kind == xnElement and node.htmlTag == tag:
-    result.add(node)
-  for child in node:
-    collectByTag(child, tag, result)
-
-var paragraphs: seq[XmlNode] = @[]
-collectByTag(doc, tagP, paragraphs)
-
-for p in paragraphs:
-  echo p.innerText
-```
-
----
-
-### Пример 4: Ручное декодирование сущностей
-
-```nim
-import std/htmlparser
-
-# Сущности в разных форматах
-let entities = ["gt", "lt", "amp", "Uuml", "Sigma", "#169", "#x1F600"]
-for e in entities:
-  let decoded = entityToUtf8(e)
-  if decoded.len > 0:
-    echo "&", e, "; → ", decoded
-  else:
-    echo "&", e, "; → неизвестно"
-```
-
----
-
-### Пример 5: Парсинг с обработкой ошибок
-
-```nim
-import std/[htmlparser, streams]
-
-let brokenHtml = """
-  <html>
-    <body>
-      <p>Незакрытый параграф
-      <div>Вложен неправильно</p></div>
-    </body>
-  </html>
-"""
-
-var errors: seq[string] = @[]
-let doc = parseHtml(newStringStream(brokenHtml), "broken.html", errors)
-
-echo "Ошибок парсинга: ", errors.len
-for e in errors:
-  echo "  - ", e
-echo "Документ всё равно разобран:"
-echo doc
-```
-
----
-
-### Пример 6: Проверка тега по строке
-
-```nim
-import std/htmlparser
-
-proc isFormElement(tagName: string): bool =
-  htmlTag(tagName) in {tagInput, tagSelect, tagTextarea, tagButton}
-
-echo isFormElement("input")    # true
-echo isFormElement("div")      # false
-echo isFormElement("TEXTAREA") # true (регистронезависимо)
-```
-
----
-
-## Быстрая шпаргалка
-
-| Задача | Функция |
-|--------|---------|
-| Разобрать HTML-строку | `parseHtml(htmlString)` |
-| Разобрать HTML из потока | `parseHtml(stream)` |
-| Разобрать с ловлей ошибок | `parseHtml(stream, filename, errors)` |
-| Загрузить HTML из файла | `loadHtml("path.html")` |
-| Загрузить с ловлей ошибок | `loadHtml("path.html", errors)` |
-| Тег узла как enum | `node.htmlTag` |
-| Строка → enum тега | `htmlTag("div")` → `tagDiv` |
-| Rune → HTML-сущность | `runeToEntity(rune)` → `"#220"` |
-| Сущность → Rune | `entityToRune("Uuml")` |
-| Сущность → UTF-8 строка | `entityToUtf8("Uuml")` → `"Ü"` |
-| Enum тега → строка | `tagToStr[tagDiv.ord - 1]` |
-
-### Форматы HTML-сущностей для `entityToRune`/`entityToUtf8`
-
-| Формат | Пример | Описание |
-|--------|--------|----------|
-| Именованная | `"Uuml"` | Без `&` и `;` |
-| Десятичная | `"#220"` | С префиксом `#` |
-| Шестнадцатеричная | `"#xDC"` или `"#XDC"` | С префиксом `#x` или `#X` |
+| Символ | Вид | Описание |
+|---|---|---|
+| `HtmlTag` | перечисление | Идентифицирует каждый известный HTML-тег; `tagUnknown` — для нераспознанных |
+| `tagToStr` | константный массив | Отображает значения `HtmlTag` на строчные имена тегов |
+| `InlineTags` | константное множество | Множество строчных HTML-тегов |
+| `BlockTags` | константное множество | Множество блочных HTML-тегов |
+| `SingleTags` | константное множество | Множество void/самозакрывающихся тегов (без детей и закрывающего тега) |
+| `htmlTag(XmlNode)` | проц | Получить `HtmlTag` разобранного узла (кэшируется в `clientData`) |
+| `htmlTag(string)` | проц | Преобразовать строку имени тега в `HtmlTag` (без учёта регистра) |
+| `runeToEntity` | проц | Преобразовать `Rune` → числовую HTML-сущность (`#NNN`) |
+| `entityToRune` | проц | Преобразовать имя или ссылку HTML-сущности → `Rune` |
+| `entityToUtf8` | проц | Преобразовать имя или ссылку HTML-сущности → UTF-8 строку |
+| `parseHtml(Stream, string, var seq)` | проц | Разобрать HTML из потока; собирать ошибки в seq |
+| `parseHtml(Stream)` | проц | Разобрать HTML из потока; игнорировать ошибки |
+| `parseHtml(string)` | проц | Разобрать HTML из строки; игнорировать ошибки |
+| `loadHtml(string, var seq)` | проц | Загрузить и разобрать HTML-файл; собирать ошибки |
+| `loadHtml(string)` | проц | Загрузить и разобрать HTML-файл; игнорировать ошибки |
