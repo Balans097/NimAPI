@@ -27,6 +27,10 @@ The combination of all three makes collision practically impossible: two OIDs wo
 
 Nim's oid takes up **16 bytes of memory** because it consists of three fields: `time` (8 bytes), `fuzz` (4 bytes), and `count` (4 bytes). However, when converted to a string (`$oid`), not the entire object is used, but only **12 bytes**. This is achieved by serializing starting from the 4th byte of the structure: the first 4 bytes of `time` are skipped, and the last 4 bytes of the time, plus all the bytes of `fuzz`, and all the bytes of `count` are taken. Thus, the string representation includes the low-order 4 bytes of the time, the full `fuzz`, and the full `count`. These 12 bytes are encoded into a hexadecimal string of length **24 characters**. It turns out that the object in memory is larger than its serialization, because some of the data (the high-order 4 bytes of the time) remains inside the structure but is not included in the string. This scheme corresponds to the classic MongoDB-OID format, where the identifier is always 12 bytes. As a result, `Oid` = 16 bytes in memory, `$oid` = 24 characters, and serialization only covers the lower half of the field along with the remaining fields.
 
+> If the top 4 bytes of 64-bit Unix time are discarded, only the bottom 32 bits remain. This means that time is stored with a precision of seconds, but the range is limited to 2^32 - 1 second ≈ 4.29 billion seconds. Converted to years, this is ≈ 136 years.
+
+> This means that the bottom 32 bits of Unix time allow dates to be encoded within a range of 136 years. The precision is incremental: seconds are stored (as in full Unix time). And the range is reduced: from 1970 to approximately 2106.
+
 **Initialisation:** The random seed and the `fuzz` value are initialised automatically the first time the module is loaded. You do not need to call any setup procedure.
 
 ---
