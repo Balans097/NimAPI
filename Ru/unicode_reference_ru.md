@@ -1,957 +1,1064 @@
-# Справочник модуля `std/unicode` (Nim)
+# Справочник модуля `unicode`
 
-> Модуль обеспечивает поддержку кодировки **UTF-8** и работу с Unicode v12.0.0.  
-> Совместим с: `strutils`, `unidecode`, `encodings`.
-
----
-
-## Содержание
-
-1. [Типы](#типы)
-2. [Кодирование и декодирование](#кодирование-и-декодирование)
-3. [Длина и позиционирование](#длина-и-позиционирование)
-4. [Доступ к рунам](#доступ-к-рунам)
-5. [Валидация](#валидация)
-6. [Классификация рун](#классификация-рун)
-7. [Преобразование регистра](#преобразование-регистра)
-8. [Строковые операции](#строковые-операции)
-9. [Итераторы](#итераторы)
-10. [Операторы сравнения](#операторы-сравнения)
+> **Стандартная библиотека Nim — поддержка UTF-8 / Unicode**
+> Совместимо с **Unicode v12.0.0**.
 
 ---
 
-## Типы
+## Общее описание
 
-### `Rune`
+Модуль `unicode` — это стандартный способ работы с **юникодным текстом** в Nim. Он оперирует строками в кодировке UTF-8 — тем же типом `string`, который используется повсюду в Nim — но рассматривает их как последовательности **Rune** (кодовых точек Unicode), а не как сырые байты.
+
+Главная вещь, которую нужно понять перед использованием модуля, — это разница между тремя видами «длины» строки:
+
+```
+s = "añyóng"
+
+s.len      == 8   # сырые байты (a=1, ñ=2, y=1, ó=2, n=1, g=1)
+s.runeLen  == 6   # кодовые точки Unicode (символы в человеческом понимании)
+s.graphemeLen(1) == 2  # байт, занятых графемой на байтовом индексе 1 (ñ)
+```
+
+Поскольку UTF-8 — кодировка переменной ширины, наивное байтовое индексирование в юникодной строке для символов вне ASCII даёт некорректный результат. Этот модуль предоставляет все необходимые инструменты для корректной работы с текстом на любом языке.
+
+```nim
+import std/unicode
+```
+
+---
+
+## Тип `Rune`
 
 ```nim
 type Rune* = distinct int32
 ```
 
-Тип для хранения одного кодовой точки Unicode. Базовый тип — `int32`.
+`Rune` хранит одну **кодовую точку** Unicode — целое число в диапазоне U+0000 … U+10FFFF. Это отдельный тип, отличный от `int32`, поэтому нельзя случайно смешать его с обычными числами.
 
-Одна `Rune` может комбинироваться с другими для формирования видимого символа (графемы).
+Один видимый на экране символ может состоять из одного *базового* Rune и нуля или более *комбинирующих* Rune (диакритических знаков, модификаторов). Например, `ñ` в форме NFD — это базовый rune `n` (U+006E) плюс комбинирующая тильда (U+0303).
+
+**Создание Rune:**
 
 ```nim
-import std/unicode
-
-let r = "ñ".runeAt(0)
-echo r           # ñ
-echo r.ord       # 241
-echo r.toUTF8    # "ñ"
+let r1 = "ñ".runeAt(0)     # из строки по байтовому индексу 0
+let r2 = Rune(0x00F1)      # из значения кодовой точки
+let r3 = 'n'.Rune          # из char (только ASCII)
 ```
 
 ---
 
-## Кодирование и декодирование
+## Измерение и навигация
 
-### `toUTF8(c: Rune): string`
-
-Преобразует руну в её UTF-8 представление в виде строки.
+### `runeLen`
 
 ```nim
-import std/unicode
-
-let r = "ó".runeAt(0)
-echo r.toUTF8       # "ó"
-echo r.toUTF8.len   # 2 (байта)
+proc runeLen*(s: openArray[char]): int
+proc runeLen*(s: string): int
 ```
 
----
-
-### `$(rune: Rune): string`
-
-Псевдоним для `toUTF8`. Позволяет использовать руну напрямую со строковыми операциями.
+Возвращает количество **кодовых точек Unicode** (Rune) в строке `s`. Это «человеческое» число символов — не длина в байтах.
 
 ```nim
-import std/unicode
-
-let r = "ñ".runeAt(0)
-echo $r          # "ñ"
-echo "Hello, " & $r  # "Hello, ñ"
-```
-
----
-
-### `$(runes: seq[Rune]): string`
-
-Преобразует последовательность рун обратно в строку. Обратная операция к `toRunes`.
-
-```nim
-import std/unicode
-
-let someString = "öÑ"
-let runes = toRunes(someString)
-echo $runes      # "öÑ"
-assert $runes == someString
-```
-
----
-
-### `add(s: var string; c: Rune)`
-
-Добавляет руну в конец строки.
-
-```nim
-import std/unicode
-
-var s = "abc"
-let c = "ä".runeAt(0)
-s.add(c)
-echo s   # "abcä"
-```
-
----
-
-### `fastToUTF8Copy(c: Rune, s: var string, pos: int, doInc = true)` *(template)*
-
-Низкоуровневый шаблон: копирует UTF-8 байты руны `c` в заранее выделенную строку `s` начиная с позиции `pos`.
-
-- Если `doInc = true` (по умолчанию), `pos` увеличивается на количество записанных байтов.
-- Для максимальной производительности строка `s` должна быть заранее выделена с достаточным запасом.
-
-```nim
-import std/unicode
-
-let r = "ñ".runeAt(0)
-var s = newString(0)
-var pos = 0
-fastToUTF8Copy(r, s, pos)
-echo s   # "ñ"
-```
-
----
-
-### `fastRuneAt(s, i, result, doInc = true)` *(template)*
-
-Низкоуровневый шаблон: читает руну из строки `s` на байтовой позиции `i` и помещает её в `result`.
-
-- Если `doInc = true`, `i` увеличивается на количество байтов, занятых руной.
-- При неверной UTF-8 последовательности возвращает руну-замену `U+FFFD`.
-
-```nim
-import std/unicode
-
 let s = "añyóng"
-var i = 1  # позиция 'ñ'
+assert s.len     == 8  # байт
+assert s.runeLen == 6  # rune
+assert "€".runeLen == 1  # один rune, но 3 байта
+```
+
+---
+
+### `runeLenAt`
+
+```nim
+proc runeLenAt*(s: openArray[char], i: Natural): int
+proc runeLenAt*(s: string, i: Natural): int
+```
+
+Возвращает количество **байт**, которое занимает Rune, начинающийся на **байтовом индексе** `i` (1–6). Это ключевой инструмент для продвижения байтового указателя ровно на одну кодовую точку.
+
+```nim
+let s = "añyóng"
+assert s.runeLenAt(0) == 1  # 'a'  — ASCII → 1 байт
+assert s.runeLenAt(1) == 2  # 'ñ'  — U+00F1 → 2 байта
+assert s.runeLenAt(3) == 1  # 'y'  — ASCII → 1 байт
+assert s.runeLenAt(4) == 2  # 'ó'  — U+00F3 → 2 байта
+```
+
+---
+
+### `size`
+
+```nim
+proc size*(r: Rune): int
+```
+
+Возвращает количество байт, которое Rune `r` занимает в кодировке UTF-8 (1–6).
+
+```nim
+let runes = toRunes("aá€𐍈")
+assert runes[0].size == 1  # ASCII
+assert runes[1].size == 2  # расширенная латиница
+assert runes[2].size == 3  # знак евро U+20AC
+assert runes[3].size == 4  # готская буква U+10348
+```
+
+---
+
+### `graphemeLen`
+
+```nim
+proc graphemeLen*(s: openArray[char]; i: Natural): Natural
+proc graphemeLen*(s: string; i: Natural): Natural
+```
+
+Возвращает количество **байт**, принадлежащих кластеру графем, начинающемуся на байтовом индексе `i`. Кластер графем — это то, что человек воспринимает как один «символ»: базовый Rune плюс все следующие за ним комбинирующие Rune.
+
+```nim
+# "añyóng" — ñ и ó здесь хранятся как прекомпозированные формы (NFC):
+let s = "añyóng"
+assert s.graphemeLen(0) == 1  # 'a'
+assert s.graphemeLen(1) == 2  # 'ñ' (U+00F1, прекомпозированный)
+assert s.graphemeLen(3) == 1  # 'y'
+
+# С комбинирующим символом:
+let t = "e\u0301"  # 'e' + комбинирующий знак ударения
+assert t.graphemeLen(0) == 3  # 'e' + модификатор = 3 байта
+```
+
+---
+
+### `runeOffset`
+
+```nim
+proc runeOffset*(s: openArray[char], pos: Natural, start: Natural = 0): int
+proc runeOffset*(s: string, pos: Natural, start: Natural = 0): int
+```
+
+Преобразует **индекс Rune** `pos` (считая от начала или от байтового смещения `start`) в **байтовый индекс** в строке `s`. Возвращает `-1`, если `pos` превышает число Rune.
+
+> ⚠️ Сложность O(n) — нужно просканировать строку с начала. При многократном доступе лучше заранее преобразовать в `seq[Rune]`.
+
+```nim
+let s = "añyóng"
+# Rune 0='a'(байт 0), 1='ñ'(байт 1), 2='y'(байт 3), 3='ó'(байт 4), ...
+assert s.runeOffset(0) == 0
+assert s.runeOffset(1) == 1
+assert s.runeOffset(2) == 3
+assert s.runeOffset(3) == 4
+assert s.runeOffset(6) == -1  # за пределами строки
+```
+
+---
+
+### `runeReverseOffset`
+
+```nim
+proc runeReverseOffset*(s: openArray[char], rev: Positive): (int, int)
+proc runeReverseOffset*(s: string, rev: Positive): (int, int)
+```
+
+Отсчитывает `rev` кодовых точек **с конца** строки `s` (нумерация с 1: `rev=1` — последний Rune). Возвращает кортеж `(байтовоеСмещение, всегоRune)`. Если `rev` превышает число Rune, `байтовоеСмещение` будет отрицательным.
+
+> ⚠️ O(n) — то же предупреждение, что и для `runeOffset`.
+
+```nim
+let s = "añyóng"  # 6 rune
+let (offset, total) = s.runeReverseOffset(1)  # последний rune 'g'
+assert total == 6
+# offset указывает на байт, с которого начинается 'g'
+```
+
+---
+
+### `lastRune`
+
+```nim
+proc lastRune*(s: openArray[char]; last: int): (Rune, int)
+proc lastRune*(s: string; last: int): (Rune, int)
+```
+
+Возвращает последний Rune в `s[0..last]` и его длину в байтах. Удобно для сканирования строки в обратном направлении без полного преобразования.
+
+```nim
+let s = "añ"
+let (rune, byteLen) = s.lastRune(s.high)
+assert $rune == "ñ"
+assert byteLen == 2
+```
+
+---
+
+## Чтение Rune
+
+### `runeAt`
+
+```nim
+proc runeAt*(s: openArray[char], i: Natural): Rune
+proc runeAt*(s: string, i: Natural): Rune
+```
+
+Возвращает Rune, начинающийся на **байтовом индексе** `i`. Это низкоуровневый быстрый доступ — `i` является *байтовой* позицией, а не позицией Rune.
+
+```nim
+let s = "añyóng"
+assert s.runeAt(0) == "a".runeAt(0)  # байт 0 → 'a'
+assert s.runeAt(1) == "ñ".runeAt(0)  # байт 1 → 'ñ' (2 байта)
+assert s.runeAt(3) == "y".runeAt(0)  # байт 3 → 'y'
+# runeAt(2) вернёт второй байт 'ñ' — continuation byte.
+# Используйте runeLenAt для корректного продвижения.
+```
+
+---
+
+### `runeAtPos`
+
+```nim
+proc runeAtPos*(s: openArray[char], pos: int): Rune
+proc runeAtPos*(s: string, pos: int): Rune
+```
+
+Возвращает Rune на **позиции Rune** `pos` (нумерация с 0, в кодовых точках). Удобнее `runeAt`, но работает за O(n).
+
+> ⚠️ Медленно при повторном доступе — лучше итерировать через `runes` или преобразовать в `seq[Rune]`.
+
+```nim
+let s = "añyóng"
+assert s.runeAtPos(0) == "a".runeAt(0)
+assert s.runeAtPos(1) == "ñ".runeAt(0)
+assert s.runeAtPos(2) == "y".runeAt(0)
+```
+
+---
+
+### `runeStrAtPos`
+
+```nim
+proc runeStrAtPos*(s: openArray[char], pos: Natural): string
+proc runeStrAtPos*(s: string, pos: Natural): string
+```
+
+Возвращает Rune на позиции `pos` в виде **строки UTF-8** (а не значения `Rune`). Удобно, когда нужна строковая форма напрямую.
+
+> ⚠️ O(n) — то же предупреждение, что и у `runeAtPos`.
+
+```nim
+let s = "añyóng"
+assert s.runeStrAtPos(1) == "ñ"
+assert s.runeStrAtPos(3) == "ó"
+```
+
+---
+
+### `fastRuneAt` (шаблон)
+
+```nim
+template fastRuneAt*(s: openArray[char] or string, i: int, result: untyped, doInc = true)
+```
+
+**Самый быстрый** способ прочитать один Rune с позиции `i`. Декодирует Rune в `result` и, если `doInc = true`, продвигает `i` на число обработанных байт. Некорректные байтовые последовательности дают символ замены U+FFFD.
+
+Шаблон инлайнится — никакого overhead вызова функции. Используется внутри всех прочих процедур чтения Rune. Применяйте его в критических по производительности циклах сканирования.
+
+```nim
+var s = "añy"
+var i = 0
 var r: Rune
-fastRuneAt(s, i, r)
-echo r   # ñ
-echo i   # 3 (сдвинулся на 2 байта)
+
+fastRuneAt(s, i, r)          # r = 'a', i = 1
+fastRuneAt(s, i, r)          # r = 'ñ', i = 3
+fastRuneAt(s, i, r)          # r = 'y', i = 4
+
+# Чтение без продвижения:
+i = 1
+fastRuneAt(s, i, r, doInc = false)  # r = 'ñ', i по-прежнему = 1
 ```
 
 ---
 
-## Длина и позиционирование
+## Извлечение подстроки
 
-### `runeLen(s): int`
-
-Возвращает количество рун в строке (не байтов).
+### `runeSubStr`
 
 ```nim
-import std/unicode
-
-let a = "añyóng"
-echo a.len      # 8 (байт)
-echo a.runeLen  # 6 (рун)
+proc runeSubStr*(s: openArray[char], pos: int, len: int = int.high): string
+proc runeSubStr*(s: string, pos: int, len: int = int.high): string
 ```
 
----
-
-### `runeLenAt(s, i: Natural): int`
-
-Возвращает число байтов, занимаемых руной, начинающейся на байтовой позиции `i`.
+Возвращает подстроку, начинающуюся с **позиции Rune** `pos` и охватывающую `len` Rune. Оба параметра могут быть **отрицательными** — тогда они отсчитываются от конца строки. Если `len` не задан — означает «до конца строки».
 
 ```nim
-import std/unicode
-
-let a = "añyóng"
-echo a.runeLenAt(0)  # 1 (ASCII 'a')
-echo a.runeLenAt(1)  # 2 ('ñ' — двухбайтовый символ)
-echo a.runeLenAt(3)  # 1 ('y')
-```
-
----
-
-### `size(r: Rune): int`
-
-Возвращает количество байтов, которое занимает данная руна в UTF-8.
-
-```nim
-import std/unicode
-
-let runes = toRunes("aá")
-echo size(runes[0])  # 1 ('a' — ASCII)
-echo size(runes[1])  # 2 ('á')
-```
-
----
-
-### `runeOffset(s, pos: Natural, start: Natural = 0): int`
-
-Возвращает байтовую позицию руны с индексом `pos` (считая руны). Необязательный параметр `start` задаёт начальную байтовую позицию для поиска. Возвращает `-1`, если строка закончилась раньше.
-
-> ⚠️ **Медленная операция.** По возможности используйте итератор или `seq[Rune]`.
-
-```nim
-import std/unicode
-
-let a = "añyóng"
-echo a.runeOffset(0)  # 0
-echo a.runeOffset(1)  # 1
-echo a.runeOffset(3)  # 4
-echo a.runeOffset(4)  # 6
-```
-
----
-
-### `runeReverseOffset(s, rev: Positive): (int, int)`
-
-Возвращает кортеж `(byteOffset, totalRunes)`, где `byteOffset` — байтовое смещение руны с конца строки (нумерация с 1). Если рун недостаточно, `byteOffset` будет отрицательным.
-
-> ⚠️ **Медленная операция.**
-
-```nim
-import std/unicode
-
-let a = "añyóng"
-let (offset, total) = a.runeReverseOffset(1)
-echo offset  # байтовая позиция последней руны
-echo total   # всего рун в строке: 6
-```
-
----
-
-### `graphemeLen(s, i: Natural): Natural`
-
-Возвращает число байтов, принадлежащих графеме начиная с байтового индекса `i`, включая следующие за ней объединяющие символы.
-
-```nim
-import std/unicode
-
-let a = "añyóng"
-echo a.graphemeLen(1)  # 2 (ñ = 'n' + диакритика)
-echo a.graphemeLen(3)  # 1 (y — обычный ASCII)
-echo a.graphemeLen(4)  # 2 (ó)
-```
-
----
-
-### `lastRune(s, last: int): (Rune, int)`
-
-Возвращает кортеж `(rune, byteLen)` для последней руны в подстроке `s[0..last]`.
-
-```nim
-import std/unicode
-
-let a = "añyóng"
-let (r, size) = a.lastRune(a.high)
-echo r     # g
-echo size  # 1
-```
-
----
-
-## Доступ к рунам
-
-### `runeAt(s, i: Natural): Rune`
-
-Возвращает руну на **байтовой** позиции `i`. Не выполняет проверку корректности байта — он может указывать внутрь многобайтового символа.
-
-```nim
-import std/unicode
-
-let a = "añyóng"
-echo a.runeAt(0)  # a
-echo a.runeAt(1)  # ñ  (начало двухбайтового символа)
-echo a.runeAt(2)  # ñ  (второй байт того же символа)
-echo a.runeAt(3)  # y
-```
-
----
-
-### `runeAtPos(s, pos: int): Rune`
-
-Возвращает руну по **индексу руны** (не байта) `pos`.
-
-> ⚠️ **Медленная операция** — для каждого вызова проходит по строке с начала.
-
-```nim
-import std/unicode
-
-let a = "añyóng"
-echo a.runeAtPos(0)  # a
-echo a.runeAtPos(1)  # ñ
-echo a.runeAtPos(3)  # ó
-```
-
----
-
-### `runeStrAtPos(s, pos: Natural): string`
-
-Возвращает руну на позиции `pos` (индекс руны) как UTF-8 строку.
-
-> ⚠️ **Медленная операция.**
-
-```nim
-import std/unicode
-
-let a = "añyóng"
-echo a.runeStrAtPos(1)  # "ñ"
-echo a.runeStrAtPos(3)  # "ó"
-```
-
----
-
-### `runeSubStr(s, pos: int, len: int = int.high): string`
-
-Возвращает подстроку, начиная с руны номер `pos`, длиной `len` рун.
-
-- Отрицательные `pos` и `len` отсчитываются от конца строки.
-- Если `len` не указан — берётся до конца строки.
-
-```nim
-import std/unicode
-
 let s = "Hänsel  ««: 10,00€"
-echo s.runeSubStr(0, 2)   # "Hä"
-echo s.runeSubStr(10, 1)  # ":"
-echo s.runeSubStr(-6)     # "10,00€"
-echo s.runeSubStr(10)     # ": 10,00€"
-echo s.runeSubStr(12, 5)  # "10,00"
-echo s.runeSubStr(-6, 3)  # "10,"
+
+assert s.runeSubStr(0, 2)   == "Hä"      # rune 0..1
+assert s.runeSubStr(10, 1)  == ":"       # rune 10
+assert s.runeSubStr(-6)     == "10,00€"  # последние 6 rune до конца
+assert s.runeSubStr(10)     == ": 10,00€" # от rune 10 до конца
+assert s.runeSubStr(12, 5)  == "10,00"   # 5 rune начиная с rune 12
+assert s.runeSubStr(-6, 3)  == "10,"     # 3 rune начиная за 6 от конца
 ```
 
 ---
 
-### `toRunes(s): seq[Rune]`
+## Преобразование между Rune и строкой
 
-Преобразует строку в последовательность рун. Позволяет использовать индексацию по рунам с O(1).
+### `toUTF8`
 
 ```nim
-import std/unicode
+proc toUTF8*(c: Rune): string
+```
 
-let a = toRunes("aáä")
-echo a[0]  # a
-echo a[1]  # á
-echo a[2]  # ä
-echo a.len # 3
+Преобразует один Rune в его строковое UTF-8 представление.
+
+```nim
+let r = "ñ".runeAt(0)
+assert r.toUTF8 == "ñ"
+assert Rune(0x20AC).toUTF8 == "€"
+```
+
+---
+
+### `$` (Rune → строка)
+
+```nim
+proc `$`*(rune: Rune): string
+```
+
+Псевдоним для `toUTF8`. Позволяет использовать `echo rune` и интерполяцию строк в привычном виде.
+
+```nim
+let r = Rune(0x03B1)  # α
+echo $r              # "α"
+echo "Буква: " & $r  # "Буква: α"
+```
+
+---
+
+### `$` (seq[Rune] → строка)
+
+```nim
+proc `$`*(runes: seq[Rune]): string
+```
+
+Преобразует последовательность Rune обратно в строку UTF-8. Обратная операция по отношению к `toRunes`.
+
+```nim
+let runes = @[Rune('H'), "ä".runeAt(0), Rune('i')]
+assert $runes == "Häi"
+```
+
+---
+
+### `add`
+
+```nim
+proc add*(s: var string; c: Rune)
+```
+
+Добавляет один Rune `c` к строке `s`. Эффективнее, чем `s &= $c`, — не создаёт промежуточных аллокаций.
+
+```nim
+var s = "abc"
+s.add("ä".runeAt(0))
+s.add(Rune(0x20AC))  # знак евро
+assert s == "abcä€"
+```
+
+---
+
+### `toRunes`
+
+```nim
+proc toRunes*(s: openArray[char]): seq[Rune]
+proc toRunes*(s: string): seq[Rune]
+```
+
+Декодирует всю строку в `seq[Rune]`. После преобразования индексирование по Rune работает за O(1) — полезно, когда нужно многократно обращаться к позициям или изменять отдельные Rune.
+
+```nim
+let runes = toRunes("aáä")
+assert runes[0] == "a".runeAt(0)
+assert runes[1] == "á".runeAt(0)
+assert runes[2] == "ä".runeAt(0)
+assert runes.len == 3
+
+# Туда и обратно:
+assert $runes == "aáä"
+```
+
+---
+
+### `fastToUTF8Copy` (шаблон)
+
+```nim
+template fastToUTF8Copy*(c: Rune, s: var string, pos: int, doInc = true)
+```
+
+Копирует UTF-8 байты Rune `c` в **заранее выделенную** строку `s` начиная с байтовой позиции `pos`. Если `doInc = true`, `pos` продвигается на число записанных байт. Это высокопроизводительный строительный блок для формирования строк — используется внутри `toUTF8`, `add` и конвертирующих процедур.
+
+```nim
+var buf = newString(3)  # заранее выделяем под один 3-байтовый rune (€)
+var pos = 0
+fastToUTF8Copy(Rune(0x20AC), buf, pos)
+assert buf == "€"
+assert pos == 3
 ```
 
 ---
 
 ## Валидация
 
-### `validateUtf8(s): int`
-
-Проверяет, является ли строка корректным UTF-8.
-
-- Возвращает `-1`, если строка корректна.
-- Возвращает байтовый индекс первого некорректного байта, если нет.
+### `validateUtf8`
 
 ```nim
-import std/unicode
-
-echo validateUtf8("añyóng")      # -1 (всё ок)
-echo validateUtf8("abc\xff")     # 3  (позиция плохого байта)
-echo validateUtf8("")            # -1
+proc validateUtf8*(s: openArray[char]): int
+proc validateUtf8*(s: string): int
 ```
 
----
-
-## Классификация рун
-
-### `isLower(c: Rune): bool`
-
-Возвращает `true`, если руна является строчной буквой.
-
-> Предпочтительнее использовать `isLower` вместо `isUpper` — это несколько эффективнее.
+Сканирует строку `s` на наличие некорректных UTF-8 последовательностей. Возвращает **байтовый индекс** первого некорректного байта или `-1`, если строка валидна. Также обнаруживает overlong-кодирования (угроза безопасности в старых парсерах).
 
 ```nim
-import std/unicode
-
-echo "a".runeAt(0).isLower  # true
-echo "A".runeAt(0).isLower  # false
-echo "α".runeAt(0).isLower  # true (греческая строчная)
-```
-
----
-
-### `isUpper(c: Rune): bool`
-
-Возвращает `true`, если руна является заглавной буквой.
-
-```nim
-import std/unicode
-
-echo "A".runeAt(0).isUpper  # true
-echo "Γ".runeAt(0).isUpper  # true (греческая заглавная)
-echo "a".runeAt(0).isUpper  # false
-```
-
----
-
-### `isAlpha(c: Rune): bool`
-
-Возвращает `true`, если руна является буквой (любого алфавита).
-
-```nim
-import std/unicode
-
-echo "a".runeAt(0).isAlpha  # true
-echo "ñ".runeAt(0).isAlpha  # true
-echo "1".runeAt(0).isAlpha  # false
-echo " ".runeAt(0).isAlpha  # false
-```
-
----
-
-### `isAlpha(s): bool`
-
-Возвращает `true`, если **все** символы строки являются буквами. Пустая строка даёт `false`.
-
-```nim
-import std/unicode
-
-echo "añyóng".isAlpha  # true
-echo "abc123".isAlpha  # false
-echo "".isAlpha        # false
-```
-
----
-
-### `isTitle(c: Rune): bool`
-
-Возвращает `true`, если руна является titlecase-символом (особый класс Unicode, одновременно и upper и lower — например, `ǅ`).
-
-```nim
-import std/unicode
-
-echo "A".runeAt(0).isTitle  # false
-```
-
----
-
-### `isWhiteSpace(c: Rune): bool`
-
-Возвращает `true`, если руна является пробельным символом Unicode (пробел, табуляция, перевод строки и т.д.).
-
-```nim
-import std/unicode
-
-echo " ".runeAt(0).isWhiteSpace   # true
-echo "\t".runeAt(0).isWhiteSpace  # true
-echo "a".runeAt(0).isWhiteSpace   # false
-```
-
----
-
-### `isSpace(s): bool`
-
-Возвращает `true`, если **все** символы строки являются пробельными. Пустая строка даёт `false`.
-
-```nim
-import std/unicode
-
-echo "\t\n \r".isSpace  # true
-echo "  a  ".isSpace    # false
-echo "".isSpace         # false
-```
-
----
-
-### `isCombining(c: Rune): bool`
-
-Возвращает `true`, если руна является объединяющим (combining) символом Unicode (диакритика, надстрочные знаки и пр.).
-
-```nim
-import std/unicode
-
-# U+0301 — объединяющий акут (combining acute accent)
-let combining = Rune(0x0301)
-echo combining.isCombining  # true
-echo "a".runeAt(0).isCombining  # false
-```
-
----
-
-## Преобразование регистра
-
-### `toLower(c: Rune): Rune`
-
-Преобразует руну в строчную.
-
-```nim
-import std/unicode
-
-echo "A".runeAt(0).toLower  # a
-echo "Γ".runeAt(0).toLower  # γ
-echo "a".runeAt(0).toLower  # a (уже строчная)
-```
-
----
-
-### `toUpper(c: Rune): Rune`
-
-Преобразует руну в заглавную.
-
-> По возможности предпочитайте `toLower` — он немного эффективнее.
-
-```nim
-import std/unicode
-
-echo "a".runeAt(0).toUpper  # A
-echo "γ".runeAt(0).toUpper  # Γ
-```
-
----
-
-### `toTitle(c: Rune): Rune`
-
-Преобразует руну в titlecase.
-
-```nim
-import std/unicode
-
-let r = "a".runeAt(0).toTitle
-echo r  # A (для большинства символов совпадает с toUpper)
-```
-
----
-
-### `toLower(s): string`
-
-Возвращает строку, в которой все руны преобразованы в строчные.
-
-```nim
-import std/unicode
-
-echo toLower("ABΓ")       # "abγ"
-echo "ÄÖÜ".toLower        # "äöü"
-```
-
----
-
-### `toUpper(s): string`
-
-Возвращает строку, в которой все руны преобразованы в заглавные.
-
-```nim
-import std/unicode
-
-echo toUpper("abγ")       # "ABΓ"
-echo "hello, мир".toUpper # "HELLO, МИР"
-```
-
----
-
-### `swapCase(s): string`
-
-Меняет регистр всех рун на противоположный.
-
-```nim
-import std/unicode
-
-echo swapCase("Αlpha Βeta Γamma")  # "αLPHA βETA γAMMA"
-echo swapCase("Hello")             # "hELLO"
-```
-
----
-
-### `capitalize(s): string`
-
-Переводит первую руну строки в верхний регистр, остальные оставляет без изменений.
-
-```nim
-import std/unicode
-
-echo capitalize("βeta")   # "Βeta"
-echo capitalize("hello")  # "Hello"
-echo capitalize("")        # ""
-```
-
----
-
-### `title(s): string`
-
-Возвращает строку в стиле «заголовка»: первая буква каждого слова — заглавная.
-
-```nim
-import std/unicode
-
-echo title("αlpha βeta γamma")  # "Αlpha Βeta Γamma"
-echo title("hello world")       # "Hello World"
-```
-
----
-
-## Строковые операции
-
-### `repeat(c: Rune, count: Natural): string`
-
-Возвращает строку из `count` повторений руны `c`.
-
-```nim
-import std/unicode
-
-let n = "ñ".runeAt(0)
-echo n.repeat(5)  # "ñññññ"
-echo n.repeat(0)  # ""
-```
-
----
-
-### `reversed(s): string`
-
-Возвращает строку в обратном порядке рун. Корректно обрабатывает объединяющие символы (combining characters) — они остаются привязаны к своим базовым символам.
-
-```nim
-import std/unicode
-
-echo reversed("Reverse this!")  # "!siht esreveR"
-echo reversed("先秦兩漢")        # "漢兩秦先"
-echo reversed("as⃝df̅")         # "f̅ds⃝a"  (combining корректно)
-```
-
----
-
-### `translate(s, replacements: proc(key: string): string): string`
-
-Заменяет слова в строке `s` с помощью функции `replacements`. Слова разделяются пробельными символами Unicode.
-
-```nim
-import std/unicode
-
-proc wordToNumber(s: string): string =
-  case s
-  of "one": "1"
-  of "two": "2"
-  else: s
-
-let a = "one two three four"
-echo a.translate(wordToNumber)  # "1 2 three four"
-```
-
----
-
-### `strip(s, leading = true, trailing = true, runes = unicodeSpaces): string`
-
-Удаляет указанные руны с начала и/или конца строки.
-
-- `leading = true` — удалять с начала.
-- `trailing = true` — удалять с конца.
-- `runes` — множество удаляемых рун; по умолчанию все Unicode-пробелы.
-
-```nim
-import std/unicode
-
-let a = "\táñyóng   "
-echo a.strip                    # "áñyóng"
-echo a.strip(leading = false)   # "\táñyóng"
-echo a.strip(trailing = false)  # "áñyóng   "
-
-# Удаление кастомных символов
-let b = "***hello***"
-echo b.strip(runes = @["*".runeAt(0)])  # "hello"
-```
-
----
-
-### `align(s, count: Natural, padding = ' '.Rune): string`
-
-Выравнивает строку по правому краю до длины `count` рун, добавляя `padding` слева. Если длина строки уже >= `count`, строка возвращается без изменений.
-
-```nim
-import std/unicode
-
-echo align("abc", 4)               # " abc"
-echo align("1232", 6)              # "  1232"
-echo align("1232", 6, '#'.Rune)   # "##1232"
-echo align("Åge", 5)              # "  Åge"
-echo align("×", 4, '_'.Rune)     # "___×"
-```
-
----
-
-### `alignLeft(s, count: Natural, padding = ' '.Rune): string`
-
-Выравнивает строку по левому краю до длины `count` рун, добавляя `padding` справа.
-
-```nim
-import std/unicode
-
-echo alignLeft("abc", 4)              # "abc "
-echo alignLeft("1232", 6)            # "1232  "
-echo alignLeft("1232", 6, '#'.Rune)  # "1232##"
-echo alignLeft("Åge", 5)             # "Åge  "
-echo alignLeft("×", 4, '_'.Rune)    # "×___"
-```
-
----
-
-### `cmpRunesIgnoreCase(a, b): int`
-
-Сравнивает две UTF-8 строки без учёта регистра.
-
-- `0` — строки равны.
-- `< 0` — `a` лексикографически меньше `b`.
-- `> 0` — `a` лексикографически больше `b`.
-
-```nim
-import std/unicode
-
-echo cmpRunesIgnoreCase("Hello", "hello")  # 0
-echo cmpRunesIgnoreCase("abc", "abd")      # < 0
-echo cmpRunesIgnoreCase("Ä", "ä")         # 0
-```
-
----
-
-### `split(s, seps: openArray[Rune] = unicodeSpaces, maxsplit = -1): seq[string]`
-
-Разбивает строку по набору рун-разделителей. Возвращает последовательность подстрок.
-
-- `seps` — список рун-разделителей; по умолчанию все Unicode-пробелы.
-- `maxsplit` — максимальное число разбиений (`-1` — без ограничений).
-
-```nim
-import std/unicode
-
-# По пробелам
-echo "hello world  nim".split()
-# @["hello", "world", "nim"]
-
-# По кастомным разделителям
-echo split("añyóng:hÃllo;是", ";:".toRunes)
-# @["añyóng", "hÃllo", "是"]
-```
-
----
-
-### `split(s, sep: Rune, maxsplit = -1): seq[string]`
-
-Разбивает строку по одной руне-разделителю.
-
-```nim
-import std/unicode
-
-echo split("a;b;;c", ";".runeAt(0))
-# @["a", "b", "", "c"]
-```
-
----
-
-### `splitWhitespace(s): seq[string]`
-
-Разбивает строку по всем пробельным рунам Unicode. Аналог `split()` без аргументов, но возвращает `seq[string]`.
-
-```nim
-import std/unicode
-
-echo splitWhitespace("hello  world\tnim")
-# @["hello", "world", "nim"]
+assert validateUtf8("hello")    == -1         # валидный ASCII
+assert validateUtf8("añyóng")   == -1         # валидный UTF-8
+assert validateUtf8("hello\xFF") == 5         # 0xFF на байте 5 некорректен
 ```
 
 ---
 
 ## Итераторы
 
-### `iterator runes(s): Rune`
-
-Перебирает все руны строки по одной.
+### `runes`
 
 ```nim
-import std/unicode
+iterator runes*(s: openArray[char]): Rune
+iterator runes*(s: string): Rune
+```
 
-for r in runes("añyóng"):
-  echo r
-# a
-# ñ
-# y
-# ó
-# n
-# g
+Итерирует по всем Rune строки `s`. Это **идиоматичный и эффективный** способ обхода всех кодовых точек — предпочтительнее индексного доступа.
+
+```nim
+let s = "añy"
+for r in s.runes:
+  echo $r   # выводит: a  ñ  y
+
+# Сбор в последовательность:
+import std/sequtils
+let runes = toSeq(s.runes)
 ```
 
 ---
 
-### `iterator utf8(s): string`
-
-Перебирает все руны строки, возвращая каждую как UTF-8 строку.
+### `utf8`
 
 ```nim
-import std/unicode
+iterator utf8*(s: openArray[char]): string
+iterator utf8*(s: string): string
+```
 
-for c in utf8("añyóng"):
-  echo c, " (", c.len, " байт)"
+Аналогично `runes`, но каждая кодовая точка возвращается в виде **строки** (её байтов UTF-8), а не значения `Rune`.
+
+```nim
+for ch in "añy".utf8:
+  echo ch, " (", ch.len, " байт)"
 # a (1 байт)
 # ñ (2 байта)
 # y (1 байт)
-# ó (2 байта)
-# n (1 байт)
-# g (1 байт)
 ```
 
 ---
 
-### `iterator split(s, seps, maxsplit)` / `iterator split(s, sep, maxsplit)`
-
-Итераторные версии `split`. Не создают промежуточную последовательность — эффективны для обработки больших строк.
+### `split` (итератор, несколько разделителей)
 
 ```nim
-import std/unicode
+iterator split*(s: openArray[char], seps: openArray[Rune] = unicodeSpaces,
+                maxsplit: int = -1): string
+iterator split*(s: string, seps: openArray[Rune] = unicodeSpaces,
+                maxsplit: int = -1): string
+```
 
-for part in split("a:b:c", ":".runeAt(0)):
-  echo part
-# a
-# b
-# c
+Разбивает строку `s` по любому из Rune в `seps`, возвращая подстроки. По умолчанию разделитель — `unicodeSpaces`, то есть все пробельные символы Unicode, а не только ASCII-пробел. Параметр `maxsplit` ограничивает число разбиений (-1 — без ограничений).
+
+```nim
+import std/sequtils
+
+# По умолчанию: разбивка по пробельным символам Unicode
+assert toSeq("hello world\t是".split) == @["hello", "world", "是"]
+
+# Пользовательские разделители
+assert toSeq(split("añyóng:hÃllo;是", ";:".toRunes)) ==
+  @["añyóng", "hÃllo", "是"]
 ```
 
 ---
 
-### `iterator splitWhitespace(s)`
-
-Итераторная версия `splitWhitespace`.
+### `split` (итератор, один разделитель)
 
 ```nim
-import std/unicode
+iterator split*(s: openArray[char], sep: Rune, maxsplit: int = -1): string
+iterator split*(s: string, sep: Rune, maxsplit: int = -1): string
+```
 
-for word in splitWhitespace("hello   world"):
-  echo word
-# hello
-# world
+Аналогично многосимвольному варианту, но разбивает по единственному Rune `sep`. Последовательные разделители порождают пустые строки между ними.
+
+```nim
+import std/sequtils
+
+let parts = toSeq(split("a;;b;c", ";".runeAt(0)))
+assert parts == @["a", "", "b", "c"]
 ```
 
 ---
 
-## Операторы сравнения
-
-### `==(a, b: Rune): bool`
-
-Проверяет равенство двух рун (по кодовой точке).
+### `splitWhitespace` (итератор)
 
 ```nim
-import std/unicode
+iterator splitWhitespace*(s: openArray[char]): string
+iterator splitWhitespace*(s: string): string
+```
 
-echo "a".runeAt(0) == "a".runeAt(0)  # true
-echo "a".runeAt(0) == "b".runeAt(0)  # false
+Разбивает строку `s` по пробельным Unicode-символам — эквивалент `split(s, unicodeSpaces)`. Несколько идущих подряд пробельных символов трактуются как один разделитель.
+
+```nim
+for word in "  hello\t世界  ".splitWhitespace:
+  echo word   # "hello", "世界"
 ```
 
 ---
 
-### `<%(a, b: Rune): bool`
+## Процедуры, возвращающие последовательности
 
-Проверяет, что кодовая точка `a` строго меньше кодовой точки `b`. Беззнаковое сравнение.
+### `split` (процедура, несколько разделителей)
 
 ```nim
-import std/unicode
+proc split*(s: openArray[char], seps: openArray[Rune] = unicodeSpaces,
+            maxsplit: int = -1): seq[string]
+proc split*(s: string, seps: openArray[Rune] = unicodeSpaces,
+            maxsplit: int = -1): seq[string]
+```
 
-let a = "ú".runeAt(0)
-let b = "ü".runeAt(0)
-echo a <% b  # true
+То же, что итератор `split`, но возвращает `seq[string]`.
+
+```nim
+let parts = "a,b,c".split(",".toRunes)
+assert parts == @["a", "b", "c"]
 ```
 
 ---
 
-### `<=%(a, b: Rune): bool`
-
-Проверяет, что кодовая точка `a` меньше или равна кодовой точке `b`. Беззнаковое сравнение.
+### `split` (процедура, один разделитель)
 
 ```nim
-import std/unicode
+proc split*(s: openArray[char], sep: Rune, maxsplit: int = -1): seq[string]
+proc split*(s: string, sep: Rune, maxsplit: int = -1): seq[string]
+```
 
-let a = "ú".runeAt(0)
-let b = "ü".runeAt(0)
-echo a <=% b  # true
-echo b <=% b  # true
+```nim
+let parts = "a::b:c".split(":".runeAt(0))
+assert parts == @["a", "", "b", "c"]
 ```
 
 ---
 
-## Полные примеры
-
-### Подсчёт символов в многоязычной строке
+### `splitWhitespace` (процедура)
 
 ```nim
-import std/unicode
+proc splitWhitespace*(s: openArray[char]): seq[string]
+proc splitWhitespace*(s: string): seq[string]
+```
 
-let text = "Hello, мир! 你好"
-echo "Байт: ", text.len       # 20+
-echo "Рун:  ", text.runeLen   # 13 (символов)
+Возвращает `seq[string]` слов, разбитых по пробельным символам Unicode.
+
+```nim
+assert "  hello\t世界  ".splitWhitespace == @["hello", "世界"]
 ```
 
 ---
 
-### Итерация и фильтрация по типу символа
+## Смена регистра (один Rune)
+
+### `toLower` (Rune)
 
 ```nim
-import std/unicode
+proc toLower*(c: Rune): Rune
+```
 
-let s = "Привет 123! Мир."
-var letters, digits, other: int
+Возвращает строчный вариант Rune `c` согласно таблицам свёртки регистра Unicode. Если у `c` нет строчной формы (цифры, знаки препинания), возвращается `c` без изменений.
 
-for r in runes(s):
-  if r.isAlpha: inc letters
-  elif r.isWhiteSpace: discard
-  else: inc other
+> Предпочитайте `toLower` вместо `toUpper` для сравнения без учёта регистра — Unicode определяет более надёжные таблицы для строчных букв.
 
-echo "Букв: ", letters
-echo "Прочих: ", other
+```nim
+assert toLower("A".runeAt(0)) == "a".runeAt(0)
+assert toLower("Γ".runeAt(0)) == "γ".runeAt(0)
+assert toLower("1".runeAt(0)) == "1".runeAt(0)  # без изменений
 ```
 
 ---
 
-### Разворот строки с диакритикой
+### `toUpper` (Rune)
 
 ```nim
-import std/unicode
+proc toUpper*(c: Rune): Rune
+```
 
-# Объединяющие символы корректно привязаны к своим базовым символам
-let s = "as⃝df̅"
-echo reversed(s)  # "f̅ds⃝a"
+Возвращает прописной вариант Rune `c`.
+
+```nim
+assert toUpper("a".runeAt(0)) == "A".runeAt(0)
+assert toUpper("γ".runeAt(0)) == "Γ".runeAt(0)
 ```
 
 ---
 
-### Построение таблицы с выравниванием по колонкам
+### `toTitle` (Rune)
 
 ```nim
-import std/unicode
+proc toTitle*(c: Rune): Rune
+```
 
-let words = ["Åge", "先秦", "a", "Unicode"]
-for w in words:
-  echo alignLeft(w, 12) & "|" & align($w.runeLen, 5)
+Преобразует `c` в **титульный** регистр — отдельную категорию Unicode, используемую для некоторых диграфов (например, `dz` → `Dz`). Для большинства Rune результат совпадает с `toUpper`.
+
+```nim
+assert toTitle("a".runeAt(0)) == "A".runeAt(0)
 ```
 
 ---
 
-### Нечувствительный к регистру поиск
+## Смена регистра (целая строка)
+
+### `toUpper` (строка)
 
 ```nim
-import std/unicode
+proc toUpper*(s: openArray[char]): string
+proc toUpper*(s: string): string
+```
 
-proc containsIgnoreCase(text, pattern: string): bool =
-  # Простая проверка через toLower
-  toLower(text).find(toLower(pattern)) >= 0
+Возвращает новую строку, в которой каждый Rune преобразован в верхний регистр.
 
-echo containsIgnoreCase("Привет МИР", "мир")  # true
+```nim
+assert toUpper("abγ") == "ABΓ"
+assert toUpper("héllo") == "HÉLLO"
 ```
 
 ---
 
-### Безопасная работа с позициями в строке
+### `toLower` (строка)
 
 ```nim
-import std/unicode
+proc toLower*(s: openArray[char]): string
+proc toLower*(s: string): string
+```
 
-let s = "Hänsel"
-# ПРАВИЛЬНО — работаем через seq[Rune] для индексации
-let runes = toRunes(s)
-echo runes[1]        # ä
-echo runes.len       # 6
+Возвращает новую строку, в которой каждый Rune преобразован в нижний регистр.
 
-# МЕДЛЕННО, но работает для разовых обращений
-echo s.runeAtPos(1)  # ä
-echo s.runeSubStr(1, 3)  # "äns"
+```nim
+assert toLower("ABΓ") == "abγ"
+assert toLower("HÉLLO") == "héllo"
+```
+
+---
+
+### `swapCase`
+
+```nim
+proc swapCase*(s: openArray[char]): string
+proc swapCase*(s: string): string
+```
+
+Возвращает новую строку, в которой прописные Rune становятся строчными, а строчные — прописными. Rune без регистра (цифры, знаки препинания, CJK) остаются без изменений.
+
+```nim
+assert swapCase("Αlpha Βeta Γamma") == "αLPHA βETA γAMMA"
+assert swapCase("Hello, World!") == "hELLO, wORLD!"
+```
+
+---
+
+### `capitalize`
+
+```nim
+proc capitalize*(s: openArray[char]): string
+proc capitalize*(s: string): string
+```
+
+Преобразует **первый Rune** строки `s` в верхний регистр, оставляя остальное без изменений.
+
+```nim
+assert capitalize("βeta") == "Βeta"
+assert capitalize("hello world") == "Hello world"  # только первый rune
+```
+
+---
+
+### `title`
+
+```nim
+proc title*(s: openArray[char]): string
+proc title*(s: string): string
+```
+
+Возвращает новую строку, в которой **первый Rune каждого слова** (отделённого пробелами) преобразован в верхний регистр. Остальные символы слова остаются без изменений.
+
+```nim
+assert title("αlpha βeta γamma") == "Αlpha Βeta Γamma"
+assert title("the quick brown fox") == "The Quick Brown Fox"
+```
+
+---
+
+## Классификация (один Rune)
+
+### `isLower`
+
+```nim
+proc isLower*(c: Rune): bool
+```
+
+Возвращает `true`, если `c` — строчная буква Unicode.
+
+> Предпочтительнее `isLower` вместо `isUpper` по соображениям производительности (та же внутренняя причина, что и у `toLower`).
+
+```nim
+assert isLower("a".runeAt(0))
+assert isLower("γ".runeAt(0))
+assert not isLower("A".runeAt(0))
+assert not isLower("1".runeAt(0))
+```
+
+---
+
+### `isUpper`
+
+```nim
+proc isUpper*(c: Rune): bool
+```
+
+Возвращает `true`, если `c` — прописная буква Unicode.
+
+```nim
+assert isUpper("A".runeAt(0))
+assert isUpper("Γ".runeAt(0))
+assert not isUpper("a".runeAt(0))
+```
+
+---
+
+### `isAlpha` (Rune)
+
+```nim
+proc isAlpha*(c: Rune): bool
+```
+
+Возвращает `true`, если `c` — **алфавитный** символ Unicode — любая буква в любом скрипте, не только латиница.
+
+```nim
+assert isAlpha("a".runeAt(0))   # латиница
+assert isAlpha("α".runeAt(0))   # греческий
+assert isAlpha("中".runeAt(0))  # CJK
+assert not isAlpha("1".runeAt(0))
+assert not isAlpha(" ".runeAt(0))
+```
+
+---
+
+### `isTitle`
+
+```nim
+proc isTitle*(c: Rune): bool
+```
+
+Возвращает `true`, если `c` — кодовая точка Unicode с титульным регистром (узкая категория для диграфов, например `ǅ`).
+
+---
+
+### `isWhiteSpace`
+
+```nim
+proc isWhiteSpace*(c: Rune): bool
+```
+
+Возвращает `true`, если `c` — пробельный символ Unicode. Охватывает все Unicode-пробелы: не только ASCII-пробел, табуляцию и переводы строк, но и неразрывный пробел, идеографический пробел и т.д.
+
+```nim
+assert isWhiteSpace(" ".runeAt(0))
+assert isWhiteSpace("\t".runeAt(0))
+assert isWhiteSpace("\u00A0".runeAt(0))   # неразрывный пробел
+assert not isWhiteSpace("a".runeAt(0))
+```
+
+---
+
+### `isCombining`
+
+```nim
+proc isCombining*(c: Rune): bool
+```
+
+Возвращает `true`, если `c` — **комбинирующий символ** Unicode (диакритический знак или модификатор, прикрепляющийся к предшествующему базовому символу). Охватываемые диапазоны: U+0300–U+036F, U+1AB0–U+1AFF, U+1DC0–U+1DFF, U+20D0–U+20FF, U+FE20–U+FE2F. Для ASCII оптимизировано и возвращает `false` немедленно.
+
+```nim
+assert isCombining(Rune(0x0301))  # комбинирующее острое ударение (◌́)
+assert not isCombining("a".runeAt(0))
+```
+
+---
+
+## Классификация (целая строка)
+
+### `isAlpha` (строка)
+
+```nim
+proc isAlpha*(s: openArray[char]): bool
+proc isAlpha*(s: string): bool
+```
+
+Возвращает `true`, если **каждый** Rune в `s` является алфавитным, и строка не пуста.
+
+```nim
+assert isAlpha("añyóng")
+assert isAlpha("αβγ")
+assert not isAlpha("añyóng123")
+assert not isAlpha("")
+```
+
+---
+
+### `isSpace` (строка)
+
+```nim
+proc isSpace*(s: openArray[char]): bool
+proc isSpace*(s: string): bool
+```
+
+Возвращает `true`, если **каждый** Rune в `s` является пробельным символом Unicode, и строка не пуста.
+
+```nim
+assert isSpace("\t\n \r\f\v")
+assert not isSpace("  a  ")
+assert not isSpace("")
+```
+
+---
+
+## Сравнение
+
+### `cmpRunesIgnoreCase`
+
+```nim
+proc cmpRunesIgnoreCase*(a, b: openArray[char]): int
+proc cmpRunesIgnoreCase*(a, b: string): int
+```
+
+Сравнивает две строки UTF-8 **без учёта регистра** с использованием таблиц свёртки регистра Unicode. Возвращает `0` при равенстве, отрицательное значение если `a < b`, и положительное если `a > b`.
+
+```nim
+assert cmpRunesIgnoreCase("abc", "ABC") == 0
+assert cmpRunesIgnoreCase("αβγ", "ΑΒΓ") == 0
+assert cmpRunesIgnoreCase("a", "b") < 0
+```
+
+---
+
+### Операторы сравнения Rune
+
+```nim
+proc `==`*(a, b: Rune): bool
+proc `<%`*(a, b: Rune): bool   # меньше (беззнаковое сравнение кодовых точек)
+proc `<=%`*(a, b: Rune): bool  # меньше или равно (беззнаковое)
+```
+
+Сравнивают два Rune по значению их кодовой точки Unicode. Операторы `<%` и `<=%` используют **беззнаковое** сравнение, что соответствует порядку Unicode для допустимых кодовых точек.
+
+```nim
+let a = "ú".runeAt(0)  # U+00FA
+let b = "ü".runeAt(0)  # U+00FC
+assert a <% b
+assert a <=% b
+assert a == "ú".runeAt(0)
+```
+
+---
+
+## Манипуляция строками
+
+### `reversed`
+
+```nim
+proc reversed*(s: openArray[char]): string
+proc reversed*(s: string): string
+```
+
+Возвращает строку `s` с Rune в обратном порядке. **Комбинирующие символы обрабатываются корректно** — они остаются привязанными к своему базовому символу и перемещаются вместе с ним, так что кластеры графем не разрушаются.
+
+```nim
+assert reversed("Hello") == "olleH"
+assert reversed("先秦兩漢") == "漢兩秦先"
+# Комбинирующие символы остаются с базовыми:
+assert reversed("as⃝df̅") == "f̅ds⃝a"
+assert reversed("a⃞b⃞c⃞") == "c⃞b⃞a⃞"
+```
+
+---
+
+### `strip`
+
+```nim
+proc strip*(s: openArray[char], leading = true, trailing = true,
+            runes: openArray[Rune] = unicodeSpaces): string
+proc strip*(s: string, leading = true, trailing = true,
+            runes: openArray[Rune] = unicodeSpaces): string
+```
+
+Удаляет ведущие и/или замыкающие Rune из строки `s`. По умолчанию убирает все пробельные символы Unicode с обоих концов. Передайте собственный массив `runes`, чтобы удалять конкретные символы. Установите `leading = false` или `trailing = false`, чтобы обрезать только один конец.
+
+```nim
+assert strip("\t áñyóng   ") == "áñyóng"
+assert strip("\t áñyóng   ", leading = false) == "\t áñyóng"
+assert strip("\t áñyóng   ", trailing = false) == "áñyóng   "
+
+# Обрезка пользовательских символов
+let cutRunes = "*".toRunes
+assert strip("**hello**", runes = cutRunes) == "hello"
+```
+
+---
+
+### `repeat`
+
+```nim
+proc repeat*(c: Rune, count: Natural): string
+```
+
+Возвращает строку, состоящую из `count` копий Rune `c`.
+
+```nim
+assert repeat("ñ".runeAt(0), 5) == "ñññññ"
+assert repeat(Rune(0x2665), 3) == "♥♥♥"
+```
+
+---
+
+### `align`
+
+```nim
+proc align*(s: openArray[char], count: Natural, padding = ' '.Rune): string
+proc align*(s: string, count: Natural, padding = ' '.Rune): string
+```
+
+**Выравнивает по правому краю**: добавляет символы `padding` перед строкой `s`, чтобы она имела длину `count` Rune. Если `s.runeLen >= count`, строка возвращается без изменений. Заполнение измеряется в **Rune**, а не в байтах — многобайтовые символы заполнения работают корректно.
+
+```nim
+assert align("abc", 6) == "   abc"
+assert align("Åge", 5) == "  Åge"
+assert align("×", 4, '_'.Rune) == "___×"
+assert align("1232", 6, '#'.Rune) == "##1232"
+```
+
+---
+
+### `alignLeft`
+
+```nim
+proc alignLeft*(s: openArray[char], count: Natural, padding = ' '.Rune): string
+proc alignLeft*(s: string, count: Natural, padding = ' '.Rune): string
+```
+
+**Выравнивает по левому краю**: добавляет символы `padding` после строки `s`, чтобы она имела длину `count` Rune.
+
+```nim
+assert alignLeft("abc", 6) == "abc   "
+assert alignLeft("Åge", 5) == "Åge  "
+assert alignLeft("×", 4, '_'.Rune) == "×___"
+```
+
+---
+
+### `translate`
+
+```nim
+proc translate*(s: openArray[char], replacements: proc(key: string): string): string
+proc translate*(s: string, replacements: proc(key: string): string): string
+```
+
+Разбивает строку `s` на слова (разделённые пробелами), вызывает `replacements(слово)` для каждого и собирает результат обратно, сохраняя исходные пробелы. Колбек получает слово как строку UTF-8 и должен вернуть замену.
+
+```nim
+proc wordToNumber(s: string): string =
+  case s
+  of "one": "1"
+  of "two": "2"
+  else: s
+
+assert translate("one two three", wordToNumber) == "1 2 three"
+
+# Практический пример: перевод слов
+proc en2fr(w: string): string =
+  case w
+  of "hello": "bonjour"
+  of "world": "monde"
+  else: w
+
+assert translate("hello world", en2fr) == "bonjour monde"
+```
+
+---
+
+## Рекомендации по производительности
+
+| Задача | Лучший подход |
+|--------|--------------|
+| Подсчитать символы в строке | `s.runeLen` |
+| Пройти по всем символам | `for r in s.runes` |
+| Случайный доступ по индексу символа | `toRunes(s)` и затем `[]` |
+| Собрать строку из Rune | `var s = ""; s.add(rune)` в цикле |
+| Продвинуться на один Rune в цикле сканирования | `fastRuneAt(s, i, r)` |
+| Вырезать подстроку по позициям символов | `s.runeSubStr(pos, len)` |
+| Проверить, что входные данные — валидный UTF-8 | `s.validateUtf8 == -1` |
+| Сравнение без учёта регистра | `cmpRunesIgnoreCase(a, b)` |
+| Развернуть строку с сохранением графем | `s.reversed` |
+
+---
+
+## Краткая шпаргалка
+
+```
+Задача                                       Процедура / Итератор
+──────────────────────────────────────────────────────────────────────────
+Число Rune в строке                          runeLen(s)
+Байтовая длина Rune на байтовом индексе i    runeLenAt(s, i)
+Байтовая длина значения Rune                 size(r)
+Байт графемы на байтовом индексе i           graphemeLen(s, i)
+Rune по байтовому индексу i                  runeAt(s, i)
+Rune по индексу Rune pos (медленно)          runeAtPos(s, pos)
+Rune как строка по индексу Rune pos          runeStrAtPos(s, pos)
+Индекс Rune → байтовое смещение              runeOffset(s, pos)
+Rune с конца → байтовое смещение + счётчик   runeReverseOffset(s, rev)
+Последний Rune и его байтовая длина          lastRune(s, last)
+Быстрое декодирование Rune + продвижение     fastRuneAt(s, i, r)
+Rune → строка UTF-8                          toUTF8(r) / $r
+Добавить Rune к строке                       s.add(r)
+Строка → последовательность Rune             toRunes(s)
+Последовательность Rune → строка             $runes
+Проверить валидность UTF-8                   validateUtf8(s)
+Итерировать по Rune                          for r in s.runes
+Итерировать по Rune как строкам              for ch in s.utf8
+Подстрока по позициям Rune                   runeSubStr(s, pos, len)
+Строчный Rune / строка                       toLower(c) / toLower(s)
+Прописной Rune / строка                      toUpper(c) / toUpper(s)
+Титульный регистр Rune                       toTitle(c)
+Инвертировать регистр                        swapCase(s)
+Сделать прописной первый Rune                capitalize(s)
+Первый Rune каждого слова — прописной        title(s)
+Строчная буква?                              isLower(c)
+Прописная буква?                             isUpper(c)
+Алфавитный символ?                           isAlpha(c) / isAlpha(s)
+Пробельный символ?                           isWhiteSpace(c) / isSpace(s)
+Комбинирующий символ?                        isCombining(c)
+Сравнение без учёта регистра                 cmpRunesIgnoreCase(a, b)
+Развернуть строку (по Rune)                  reversed(s)
+Обрезать пробелы / символы                  strip(s)
+Повторить Rune                               repeat(c, n)
+Выровнять по правому краю (в Rune)           align(s, count)
+Выровнять по левому краю (в Rune)            alignLeft(s, count)
+Разбить по пробелам                          splitWhitespace(s)
+Разбить по разделителям Rune                 split(s, sep) / split(s, seps)
+Заменить слова через колбек                  translate(s, proc)
 ```
