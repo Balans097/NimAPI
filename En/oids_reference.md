@@ -13,7 +13,7 @@ Each OID is assembled from three independent components stored in a fixed binary
 │   time (8 bytes) │  fuzz (4 bytes) │  count (4 bytes)  │
 │  Unix timestamp  │ random per-proc │ atomic counter    │
 └──────────────────┴─────────────────┴───────────────────┘
-                     Total: 16 bytes (96 bits)
+                     Total: 16 bytes (128 bits)
                      String representation: 24 hex characters
 ```
 
