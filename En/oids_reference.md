@@ -25,6 +25,8 @@ The combination of all three makes collision practically impossible: two OIDs wo
 
 **Wire format:** When serialised to a string via `$`, the OID becomes a 24-character lowercase hexadecimal string, e.g. `"5fc7f546ddbbc84800006aaf"`.
 
+Nim's oid takes up **16 bytes of memory** because it consists of three fields: `time` (8 bytes), `fuzz` (4 bytes), and `count` (4 bytes). However, when converted to a string (`$oid`), not the entire object is used, but only **12 bytes**. This is achieved by serializing starting from the 4th byte of the structure: the first 4 bytes of `time` are skipped, and the last 4 bytes of the time, plus all the bytes of `fuzz`, and all the bytes of `count` are taken. Thus, the string representation includes the low-order 4 bytes of the time, the full `fuzz`, and the full `count`. These 12 bytes are encoded into a hexadecimal string of length **24 characters**. It turns out that the object in memory is larger than its serialization, because some of the data (the high-order 4 bytes of the time) remains inside the structure but is not included in the string. This scheme corresponds to the classic MongoDB-OID format, where the identifier is always 12 bytes. As a result, `Oid` = 16 bytes in memory, `$oid` = 24 characters, and serialization only covers the lower half of the field along with the remaining fields.
+
 **Initialisation:** The random seed and the `fuzz` value are initialised automatically the first time the module is loaded. You do not need to call any setup procedure.
 
 ---
