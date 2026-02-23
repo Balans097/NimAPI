@@ -1,454 +1,362 @@
-# `std/httpclient` Module Reference (Nim)
+# `httpclient` Module Reference
 
-> This module implements a simple HTTP client for retrieving web pages and other data.  
-> **Warning:** Validate untrusted inputs — URI parsers and getters do not detect malicious URIs.
-
----
-
-## Table of Contents
-
-1. [Types and Data Structures](#types-and-data-structures)
-2. [Proxy](#proxy)
-3. [MultipartData](#multipartdata)
-4. [Creating Clients](#creating-clients)
-5. [Client Management](#client-management)
-6. [Response Object](#response-object)
-7. [HTTP Request Methods](#http-request-methods)
-8. [Constants](#constants)
-9. [Exceptions](#exceptions)
+> **Nim Standard Library — HTTP Client**
+> Part of Nim's runtime library. © 2026 Nim Contributors.
+> API status: **Unstable** in parts; core API is stable.
 
 ---
 
-## Types and Data Structures
+## Overview
 
-### `Response`
+`httpclient` provides a full-featured HTTP/1.1 client for both **synchronous** and **asynchronous** usage. A single import is all you need to make GET, POST, PUT, PATCH, DELETE, and HEAD requests, handle redirects, work with multipart form data, stream large files, track download progress, and connect through proxies.
 
-Represents a synchronous HTTP server response.
+The module exposes two client types that share an identical API surface:
+
+- `HttpClient` — blocking, suitable for scripts and simple tools.
+- `AsyncHttpClient` — non-blocking, built on `asyncdispatch`, suitable for servers and concurrent code.
+
+```nim
+import std/httpclient
+```
+
+For HTTPS, also compile with `-d:ssl`.
+
+> ⚠️ **Security note:** URI parsers in this module do not detect malicious URIs. Always validate untrusted input before constructing request URLs.
+
+---
+
+## Types
+
+### `Response` / `AsyncResponse`
+
+The object returned by every request procedure. Both types expose identical fields and accessor procs.
 
 ```nim
 type Response* = ref object
-  version*: string       # HTTP version ("1.0" or "1.1")
-  status*: string        # Status string, e.g. "200 OK"
-  headers*: HttpHeaders  # Response headers
-  bodyStream*: Stream    # Stream for reading the response body
-```
+  version*: string      # HTTP version: "1.0" or "1.1"
+  status*: string       # Status line, e.g. "200 OK"
+  headers*: HttpHeaders # All response headers
+  bodyStream*: Stream   # Raw body stream (sync)
 
-### `AsyncResponse`
-
-Represents an asynchronous HTTP server response.
-
-```nim
 type AsyncResponse* = ref object
   version*: string
   status*: string
   headers*: HttpHeaders
-  bodyStream*: FutureStream[string]
+  bodyStream*: FutureStream[string]  # Raw body stream (async)
 ```
-
-### `MultipartData`
-
-An object used to construct `multipart/form-data` request bodies.
-
-### `MultipartEntries`
-
-A type alias for `openArray[tuple[name, content: string]]` — a list of field name / value pairs.
 
 ### `Proxy`
 
-Represents an HTTP or SOCKS5 proxy server.
+Holds proxy connection details. Constructed via `newProxy`.
 
-```nim
-type Proxy* = ref object
-  url*: Uri
-```
+### `MultipartData`
+
+Holds form fields and file entries for `multipart/form-data` requests. Constructed via `newMultipartData`.
 
 ### `ProgressChangedProc`
 
-The type of the progress callback. Called approximately once per second during a download.
+Callback type for download progress reporting:
 
 ```nim
-type ProgressChangedProc*[ReturnType] =
+type ProgressChangedProc[ReturnType] =
   proc (total, progress, speed: BiggestInt): ReturnType {.closure, gcsafe.}
 ```
 
-- `total` — expected total size in bytes (may be 0 if the server omits `Content-Length`).
-- `progress` — bytes received so far.
-- `speed` — bytes received in the last second.
+For `HttpClient` the return type is `void`; for `AsyncHttpClient` it is `Future[void]`.
+
+### `ProtocolError`
+
+Raised when the server's response does not conform to HTTP/1.x.
+
+### `HttpRequestError`
+
+Raised by `getContent`, `postContent`, and all other `*Content` procedures when the server returns a 4xx or 5xx status code.
 
 ---
 
-## Proxy
+## Constants
 
-### `newProxy(url: Uri): Proxy`
-### `newProxy(url: string): Proxy`
-
-Creates a new `Proxy` object. Authentication credentials can be embedded directly in the URL (`http://user:password@host`).
+### `defUserAgent`
 
 ```nim
-import std/httpclient
-
-# No authentication
-let proxy = newProxy("http://myproxy.example.com:8080")
-
-# With authentication
-let authProxy = newProxy("http://user:secret@myproxy.example.com:8080")
-
-# SOCKS5 proxy with proxy-side DNS resolution
-let socks5Proxy = newProxy("socks5h://user:secret@myproxy.example.com:1080")
-
-let client = newHttpClient(proxy = proxy)
+const defUserAgent* = "Nim-httpclient/" & NimVersion
 ```
 
-> **Deprecated overloads:** `newProxy(url, auth)` and `proc auth*(p: Proxy)` are deprecated. Embed credentials in the URL instead.
+The default `User-Agent` header value sent with every request. You can override it per-client via `newHttpClient(userAgent = "MyApp/1.0")`.
 
 ---
 
-## MultipartData
+## Client Construction
 
-### `newMultipartData(): MultipartData`
+### `newHttpClient`
 
-Constructs a new, empty `MultipartData` object.
-
-```nim
-var data = newMultipartData()
-```
-
----
-
-### `newMultipartData(xs: MultipartEntries): MultipartData`
-
-Creates a `MultipartData` and fills it with the provided entries immediately.
-
-```nim
-var data = newMultipartData({"action": "login", "format": "json"})
-```
-
----
-
-### `add(p: MultipartData, name, content: string, filename = "", contentType = "", useStream = true)`
-
-Adds an entry to `MultipartData`.
-
-| Parameter | Description |
-|---|---|
-| `name` | The form field name |
-| `content` | Field value, or a file path if `filename` is provided |
-| `filename` | File name (makes this a file field) |
-| `contentType` | MIME type of the file |
-| `useStream` | `true` — file is streamed from disk; `false` — file is read into memory |
-
-Raises `ValueError` if `name`, `filename`, or `contentType` contain newline characters.
-
-```nim
-var data = newMultipartData()
-data.add("comment", "Hello!")
-data.add("avatar", "/path/to/image.png", filename = "avatar.png",
-         contentType = "image/png")
-```
-
----
-
-### `add(p: MultipartData, xs: MultipartEntries): MultipartData`
-
-Adds a list of text fields. Returns `p` for chaining.
-
-```nim
-data.add({"username": "alice", "role": "admin"})
-```
-
----
-
-### `addFiles(p: MultipartData, xs: openArray[tuple[name, file: string]], mimeDb = newMimetypes(), useStream = true): MultipartData`
-
-Adds files from the filesystem. MIME types are determined automatically from file extensions.
-
-- `useStream = true` (default): files are streamed from disk during the request — memory-efficient.
-- `useStream = false`: files are fully read into memory before sending.
-
-Raises `IOError` if a file cannot be opened or read.
-
-```nim
-import std/[httpclient, mimetypes]
-
-let mimes = newMimetypes()
-var data = newMultipartData()
-data.addFiles({"report": "report.pdf", "logo": "logo.png"}, mimeDb = mimes)
-
-let client = newHttpClient()
-defer: client.close()
-echo client.postContent("https://example.com/upload", multipart = data)
-```
-
----
-
-### `p[name] = content: string`
-
-Shorthand for adding a plain text field.
-
-```nim
-data["username"] = "alice"
-```
-
----
-
-### `p[name] = (filename, contentType, content): tuple`
-
-Shorthand for adding a file field with explicit filename, content type, and content.
-
-```nim
-data["page"] = ("index.html", "text/html", "<html>...</html>")
-```
-
----
-
-### `$(data: MultipartData): string`
-
-Converts `MultipartData` to a human-readable string for debugging.
-
-```nim
-echo $data
-```
-
----
-
-## Creating Clients
-
-### `newHttpClient(...): HttpClient`
-
-Creates a new synchronous HTTP client instance.
-
-**Signature:**
 ```nim
 proc newHttpClient*(
-  userAgent = defUserAgent,
+  userAgent    = defUserAgent,
   maxRedirects = 5,
-  sslContext = getDefaultSSL(),
-  proxy: Proxy = nil,
-  timeout = -1,
-  headers = newHttpHeaders()
+  sslContext   = getDefaultSSL(),
+  proxy        : Proxy = nil,
+  timeout      = -1,
+  headers      = newHttpHeaders()
 ): HttpClient
 ```
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `userAgent` | `string` | `"Nim-httpclient/<version>"` | User-Agent header value |
-| `maxRedirects` | `int` | `5` | Maximum redirects to follow; `0` to disable |
-| `sslContext` | `SslContext` | `CVerifyPeer` | SSL/TLS context |
-| `proxy` | `Proxy` | `nil` | HTTP or SOCKS5 proxy |
-| `timeout` | `int` | `-1` (no limit) | Timeout in milliseconds |
-| `headers` | `HttpHeaders` | empty | Global headers sent with every request |
+#### What it does
+
+Creates a synchronous HTTP client. The client maintains a persistent TCP connection — subsequent requests to the same host reuse it without reconnecting. You must call `close()` when done.
+
+#### Parameters
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `userAgent` | `"Nim-httpclient/X.Y.Z"` | Value of the `User-Agent` request header. |
+| `maxRedirects` | `5` | Maximum number of automatic redirects to follow. Set to `0` to disable. |
+| `sslContext` | system default | OpenSSL context for HTTPS. Controls certificate verification mode. |
+| `proxy` | `nil` | Optional HTTP or SOCKS5 proxy. |
+| `timeout` | `-1` (no timeout) | Socket timeout in **milliseconds**. Applies to individual socket operations, not the total request. |
+| `headers` | empty | Default headers sent with every request from this client. |
+
+#### Example
 
 ```nim
 import std/httpclient
 
-# Simple client
-let client = newHttpClient()
-defer: client.close()
-echo client.getContent("https://example.com")
+# Minimal: one-liner GET
+let html = newHttpClient().getContent("http://example.com")
 
-# Client with 5-second timeout and custom headers
-let client2 = newHttpClient(
-  timeout = 5000,
-  headers = newHttpHeaders({"Accept": "application/json"})
+# Configured client
+let client = newHttpClient(
+  userAgent    = "MyBot/2.0",
+  timeout      = 5_000,   # 5-second socket timeout
+  maxRedirects = 3
 )
-defer: client2.close()
+defer: client.close()
+echo client.getContent("https://api.example.com/data")
 ```
 
 ---
 
-### `newAsyncHttpClient(...): AsyncHttpClient`
+### `newAsyncHttpClient`
 
-Creates a new asynchronous HTTP client instance. Parameters are identical to `newHttpClient`, except `timeout` is not yet supported.
+```nim
+proc newAsyncHttpClient*(
+  userAgent    = defUserAgent,
+  maxRedirects = 5,
+  sslContext   = getDefaultSSL(),
+  proxy        : Proxy = nil,
+  headers      = newHttpHeaders()
+): AsyncHttpClient
+```
+
+#### What it does
+
+Creates an **asynchronous** HTTP client for use inside `async` procedures. Accepts the same parameters as `newHttpClient`, except `timeout` is not yet supported for async clients.
+
+One `AsyncHttpClient` instance handles **one request at a time**. To make parallel requests, create multiple client instances.
+
+#### Example
 
 ```nim
 import std/[asyncdispatch, httpclient]
 
-proc fetchPage(): Future[string] {.async.} =
-  let client = newAsyncHttpClient()
-  defer: client.close()
-  return await client.getContent("https://example.com")
+proc fetchAll(): Future[void] {.async.} =
+  # Two clients → two parallel requests
+  let c1 = newAsyncHttpClient()
+  let c2 = newAsyncHttpClient()
+  defer:
+    c1.close()
+    c2.close()
 
-echo waitFor fetchPage()
+  let (r1, r2) = await all(
+    c1.getContent("https://api.example.com/users"),
+    c2.getContent("https://api.example.com/posts")
+  )
+  echo r1
+  echo r2
+
+waitFor fetchAll()
 ```
-
-> **Important:** A single `AsyncHttpClient` instance can only handle one request at a time. To send requests in parallel, create multiple client instances.
 
 ---
 
 ## Client Management
 
-### `close(client: HttpClient | AsyncHttpClient)`
-
-Closes any active network connections held by the client.
+### `close`
 
 ```nim
-client.close()
+proc close*(client: HttpClient | AsyncHttpClient)
 ```
 
-Always close the client in a `try/finally` block or using `defer` to avoid resource leaks.
+#### What it does
+
+Closes the underlying TCP socket and marks the client as disconnected. Should always be called when you are finished with a client — use `defer` to guarantee it even if an exception is raised.
+
+```nim
+let client = newHttpClient()
+defer: client.close()   # runs even if the body raises
+let body = client.getContent("https://example.com")
+```
 
 ---
 
-### `getSocket(client: HttpClient): Socket`
-### `getSocket(client: AsyncHttpClient): AsyncSocket`
-
-Returns the underlying network socket. Useful for inspecting connection details.
+### `getSocket`
 
 ```nim
+proc getSocket*(client: HttpClient): Socket
+proc getSocket*(client: AsyncHttpClient): AsyncSocket
+```
+
+#### What it does
+
+Returns the underlying network socket. Useful for inspecting low-level connection details such as local and remote addresses.
+
+```nim
+let client = newHttpClient()
+defer: client.close()
+discard client.get("http://example.com")
+
 if client.connected:
-  echo client.getSocket().getLocalAddr()
-  echo client.getSocket().getPeerAddr()
+  echo "Local:  ", client.getSocket.getLocalAddr
+  echo "Remote: ", client.getSocket.getPeerAddr
 ```
 
 ---
 
-### Field `onProgressChanged`
+## Response Accessors
 
-A callback invoked approximately once per second to report download progress.
+These procedures work on both `Response` and `AsyncResponse`.
+
+### `code`
 
 ```nim
-import std/[asyncdispatch, httpclient]
-
-proc onProgress(total, progress, speed: BiggestInt) {.async.} =
-  echo "Downloaded ", progress, " of ", total, " bytes"
-  echo "Speed: ", speed div 1024, " KB/s"
-
-proc main() {.async.} =
-  let client = newAsyncHttpClient()
-  client.onProgressChanged = onProgress
-  defer: client.close()
-  discard await client.getContent("https://example.com/bigfile.zip")
-
-waitFor main()
-
-# To disable the callback:
-# client.onProgressChanged = nil
+proc code*(response: Response | AsyncResponse): HttpCode
 ```
 
----
-
-### Field `headers`
-
-`HttpHeaders` sent with every request from this client. Can be overridden per-request via the `headers` parameter of `request`.
+Parses and returns the numeric HTTP status code from the response's `status` string. Raises `ValueError` if the status string is malformed.
 
 ```nim
-client.headers = newHttpHeaders({
-  "Authorization": "Bearer mytoken",
-  "Accept": "application/json"
-})
+let resp = client.get("https://httpbin.org/status/404")
+echo resp.code        # Http404
+echo resp.code == Http200  # false
 ```
 
 ---
 
-### Field `timeout`
-
-Timeout in milliseconds for the synchronous client. `-1` means no timeout. Raises `TimeoutError` if exceeded.
-
-> **Note:** The timeout applies to individual socket calls, not to the entire request. As long as the server is sending data, no exception will be raised.
+### `contentType`
 
 ```nim
-let client = newHttpClient(timeout = 3000) # 3 seconds
+proc contentType*(response: Response | AsyncResponse): string
+```
+
+Returns the value of the `Content-Type` response header, or an empty string if it is absent.
+
+```nim
+let resp = client.get("https://httpbin.org/json")
+echo resp.contentType   # "application/json"
 ```
 
 ---
 
-## Response Object
+### `contentLength`
 
-### `code(response: Response | AsyncResponse): HttpCode`
+```nim
+proc contentLength*(response: Response | AsyncResponse): int
+```
 
-Returns the numeric HTTP status code of the response.
-
-Raises `ValueError` if the status string cannot be parsed.
+Returns the value of the `Content-Length` header as an integer. Returns `-1` if the header is not present. Raises `ValueError` if the header value is not a valid integer.
 
 ```nim
 let resp = client.get("https://example.com")
-echo resp.code           # 200
-echo resp.code == Http200  # true
+echo resp.contentLength   # e.g. 1256, or -1 for chunked responses
 ```
 
 ---
 
-### `contentType(response: Response | AsyncResponse): string`
-
-Returns the value of the `Content-Type` response header.
+### `lastModified`
 
 ```nim
-echo resp.contentType    # "text/html; charset=utf-8"
+proc lastModified*(response: Response | AsyncResponse): DateTime
 ```
 
----
-
-### `contentLength(response: Response | AsyncResponse): int`
-
-Returns the value of the `Content-Length` response header.  
-Returns `-1` if the header is absent.
-
-Raises `ValueError` if the header value is not a valid integer.
+Parses the `Last-Modified` response header and returns a `DateTime` in UTC. Raises `ValueError` if the header is absent or cannot be parsed as an HTTP date.
 
 ```nim
-echo resp.contentLength  # 42315
-```
-
----
-
-### `lastModified(response: Response | AsyncResponse): DateTime`
-
-Returns the resource's last modification time parsed from the `Last-Modified` header.
-
-Raises `ValueError` if parsing fails.
-
-```nim
-echo resp.lastModified   # 2024-01-15T10:30:00+00:00
-```
-
----
-
-### `body(response: Response): string`
-### `body(response: AsyncResponse): Future[string]`
-
-Returns the response body as a string. The result is cached — subsequent calls do not re-read from the network.
-
-```nim
-# Synchronous
 let resp = client.get("https://example.com")
-echo resp.body
+echo resp.lastModified   # e.g. 2024-01-15T10:30:00Z
+```
 
-# Asynchronous
-let resp = await client.get("https://example.com")
+---
+
+### `body` (sync)
+
+```nim
+proc body*(response: Response): string
+```
+
+Reads and returns the entire response body as a string. The result is **cached**: calling `body` a second time returns the cached string without re-reading the stream.
+
+```nim
+let resp = client.get("https://httpbin.org/get")
+echo resp.body   # full JSON string
+```
+
+---
+
+### `body` (async)
+
+```nim
+proc body*(response: AsyncResponse): Future[string] {.async.}
+```
+
+Async counterpart: reads and caches the full body, returning a `Future[string]`.
+
+```nim
+let resp = await client.get("https://httpbin.org/get")
 echo await resp.body
 ```
 
 ---
 
-## HTTP Request Methods
+## Request Procedures
 
-> All methods work with both `HttpClient` (synchronous) and `AsyncHttpClient` (asynchronous).  
-> Async versions return a `Future[...]`.
+All request procedures come in two flavours:
 
----
+- `verb(client, url)` → returns a `Response`/`AsyncResponse`. You can inspect status, headers, and body separately.
+- `verbContent(client, url)` → returns the body string directly, **and raises `HttpRequestError`** on 4xx/5xx.
 
-### `request(client, url, httpMethod, body, headers, multipart): Response | AsyncResponse`
-
-The universal method for performing any HTTP request.
+### `request`
 
 ```nim
 proc request*(
-  client: HttpClient | AsyncHttpClient,
-  url: Uri | string,
-  httpMethod: HttpMethod | string = HttpGet,
-  body = "",
-  headers: HttpHeaders = nil,
-  multipart: MultipartData = nil
-): Future[Response | AsyncResponse]
+  client     : HttpClient | AsyncHttpClient,
+  url        : Uri | string,
+  httpMethod : HttpMethod | string = HttpGet,
+  body       = "",
+  headers    : HttpHeaders = nil,
+  multipart  : MultipartData = nil
+): Future[Response | AsyncResponse] {.multisync.}
 ```
 
-| Parameter | Description |
-|---|---|
-| `url` | Request URL; must not contain `\r` or `\n` characters |
-| `httpMethod` | Method enum: `HttpGet`, `HttpPost`, `HttpPut`, `HttpDelete`, `HttpPatch`, `HttpHead`, `HttpOptions`, `HttpTrace`, `HttpConnect` |
-| `body` | Request body string |
-| `headers` | Per-request headers (override `client.headers` for this request only) |
-| `multipart` | Form data for multipart uploads |
+#### What it does
+
+The universal request procedure — all other verb shortcuts (`get`, `post`, etc.) delegate to this. Sends an HTTP request using any method, with an optional body, per-request headers, and multipart data. Follows redirects automatically up to `client.maxRedirects`.
+
+The `headers` parameter **overrides** `client.headers` for this single request only — they are not persisted.
+
+The URL must not contain newline characters; violation raises `AssertionDefect`.
+
+Passing a `string` for `httpMethod` is deprecated since Nim 1.5 — use the `HttpMethod` enum values (`HttpGet`, `HttpPost`, etc.).
+
+#### Redirect behaviour
+
+| Status code | Method after redirect | Body after redirect |
+|------------|----------------------|---------------------|
+| 301, 302, 303 | Changed to `GET` (unless already GET/HEAD) | Stripped |
+| 307, 308 | Unchanged | Unchanged |
+
+When a redirect crosses to a different hostname, the `Authorization` and `Host` headers are automatically removed to prevent credential leakage.
+
+#### Example
 
 ```nim
 import std/[httpclient, json]
@@ -456,310 +364,522 @@ import std/[httpclient, json]
 let client = newHttpClient()
 defer: client.close()
 
-let body = $(%*{"name": "Alice", "age": 30})
+# POST with JSON body and per-request Content-Type header
+let body = $(%*{"name": "Alice", "score": 42})
 let resp = client.request(
   "https://api.example.com/users",
   httpMethod = HttpPost,
-  body = body,
-  headers = newHttpHeaders({"Content-Type": "application/json"})
+  body       = body,
+  headers    = newHttpHeaders({"Content-Type": "application/json"})
 )
-echo resp.status   # "201 Created"
+echo resp.status    # "201 Created"
 echo resp.body
 ```
 
 ---
 
-### `head(client, url): Response | AsyncResponse`
-
-Performs a `HEAD` request. No response body is returned.
+### `head`
 
 ```nim
-let resp = client.head("https://example.com/file.zip")
-echo resp.contentLength  # Get file size without downloading
+proc head*(client: HttpClient | AsyncHttpClient,
+           url: Uri | string): Future[Response | AsyncResponse] {.multisync.}
+```
+
+Sends an HTTP `HEAD` request. The server returns headers but **no body**. Useful for checking whether a resource exists or obtaining its metadata without downloading it.
+
+```nim
+let resp = client.head("https://example.com")
+echo resp.code          # Http200
+echo resp.contentLength # size in bytes, without downloading
 ```
 
 ---
 
-### `get(client, url): Response | AsyncResponse`
+### `get`
 
-Performs a `GET` request and returns the full response object.
+```nim
+proc get*(client: HttpClient | AsyncHttpClient,
+          url: Uri | string): Future[Response | AsyncResponse] {.multisync.}
+```
+
+Sends an HTTP `GET` request and returns the full response object, giving you access to status, headers, and the body stream.
 
 ```nim
 let resp = client.get("https://httpbin.org/get")
-echo resp.code
+if resp.code == Http200:
+  echo resp.body
+```
+
+---
+
+### `getContent`
+
+```nim
+proc getContent*(client: HttpClient | AsyncHttpClient,
+                 url: Uri | string): Future[string] {.multisync.}
+```
+
+Sends a `GET` request and returns **only the body** as a string. Raises `HttpRequestError` on any 4xx or 5xx response, making error handling simple.
+
+```nim
+try:
+  let html = client.getContent("https://example.com")
+  echo html
+except HttpRequestError as e:
+  echo "Server error: ", e.msg
+```
+
+---
+
+### `delete`
+
+```nim
+proc delete*(client: HttpClient | AsyncHttpClient,
+             url: Uri | string): Future[Response | AsyncResponse] {.multisync.}
+```
+
+Sends an HTTP `DELETE` request. Returns the full response.
+
+```nim
+let resp = client.delete("https://api.example.com/items/42")
+echo resp.status   # "204 No Content"
+```
+
+---
+
+### `deleteContent`
+
+```nim
+proc deleteContent*(client: HttpClient | AsyncHttpClient,
+                    url: Uri | string): Future[string] {.multisync.}
+```
+
+Sends a `DELETE` request and returns the response body. Raises `HttpRequestError` on 4xx/5xx.
+
+---
+
+### `post`
+
+```nim
+proc post*(
+  client    : HttpClient | AsyncHttpClient,
+  url       : Uri | string,
+  body      = "",
+  multipart : MultipartData = nil
+): Future[Response | AsyncResponse] {.multisync.}
+```
+
+Sends an HTTP `POST` request with an optional plain-text body or multipart form data. Returns the full response.
+
+```nim
+let resp = client.post("https://httpbin.org/post", body = "hello=world")
 echo resp.body
 ```
 
 ---
 
-### `getContent(client, url): string | Future[string]`
-
-Performs a `GET` request and returns the response body as a string.  
-Raises `HttpRequestError` on 4xx or 5xx status codes.
+### `postContent`
 
 ```nim
-let html = client.getContent("https://example.com")
-echo html
+proc postContent*(
+  client    : HttpClient | AsyncHttpClient,
+  url       : Uri | string,
+  body      = "",
+  multipart : MultipartData = nil
+): Future[string] {.multisync.}
 ```
 
----
-
-### `delete(client, url): Response | AsyncResponse`
-
-Performs a `DELETE` request.
-
-```nim
-let resp = client.delete("https://api.example.com/items/42")
-echo resp.status
-```
-
----
-
-### `deleteContent(client, url): string | Future[string]`
-
-Performs a `DELETE` request and returns the response body.  
-Raises `HttpRequestError` on 4xx/5xx status codes.
-
-```nim
-echo client.deleteContent("https://api.example.com/items/42")
-```
-
----
-
-### `post(client, url, body, multipart): Response | AsyncResponse`
-
-Performs a `POST` request.
-
-```nim
-# JSON request
-client.headers = newHttpHeaders({"Content-Type": "application/json"})
-let resp = client.post("https://api.example.com/data", body = """{"key":"value"}""")
-
-# Multipart form upload
-var data = newMultipartData()
-data["file"] = ("report.csv", "text/csv", "a,b,c\n1,2,3")
-let resp2 = client.post("https://example.com/upload", multipart = data)
-```
-
----
-
-### `postContent(client, url, body, multipart): string | Future[string]`
-
-Performs a `POST` request and returns the response body.  
-Raises `HttpRequestError` on 4xx/5xx status codes.
+Sends a `POST` request and returns the body string. Raises `HttpRequestError` on error.
 
 ```nim
 let result = client.postContent(
   "https://api.example.com/echo",
-  body = "Hello!"
+  body = "ping"
 )
-echo result
+echo result  # "pong"
 ```
 
 ---
 
-### `put(client, url, body, multipart): Response | AsyncResponse`
+### `put`
 
-Performs a `PUT` request.
+```nim
+proc put*(
+  client    : HttpClient | AsyncHttpClient,
+  url       : Uri | string,
+  body      = "",
+  multipart : MultipartData = nil
+): Future[Response | AsyncResponse] {.multisync.}
+```
+
+Sends an HTTP `PUT` request. Semantically used to **replace** an existing resource in full.
 
 ```nim
 let resp = client.put(
   "https://api.example.com/items/1",
   body = """{"name":"Updated"}"""
 )
+echo resp.status
 ```
 
 ---
 
-### `putContent(client, url, body, multipart): string | Future[string]`
+### `putContent`
 
-Performs a `PUT` request and returns the response body.  
-Raises `HttpRequestError` on error status codes.
+```nim
+proc putContent*(
+  client    : HttpClient | AsyncHttpClient,
+  url       : Uri | string,
+  body      = "",
+  multipart : MultipartData = nil
+): Future[string] {.multisync.}
+```
+
+Sends a `PUT` request and returns the response body. Raises `HttpRequestError` on error.
 
 ---
 
-### `patch(client, url, body, multipart): Response | AsyncResponse`
+### `patch`
 
-Performs a `PATCH` request.
+```nim
+proc patch*(
+  client    : HttpClient | AsyncHttpClient,
+  url       : Uri | string,
+  body      = "",
+  multipart : MultipartData = nil
+): Future[Response | AsyncResponse] {.multisync.}
+```
+
+Sends an HTTP `PATCH` request. Used to **partially update** a resource.
 
 ```nim
 let resp = client.patch(
   "https://api.example.com/items/1",
-  body = """{"status":"active"}"""
+  body = """{"status":"archived"}"""
 )
+echo resp.code
 ```
 
 ---
 
-### `patchContent(client, url, body, multipart): string | Future[string]`
+### `patchContent`
 
-Performs a `PATCH` request and returns the response body.  
-Raises `HttpRequestError` on error status codes.
+```nim
+proc patchContent*(
+  client    : HttpClient | AsyncHttpClient,
+  url       : Uri | string,
+  body      = "",
+  multipart : MultipartData = nil
+): Future[string] {.multisync.}
+```
+
+Sends a `PATCH` request and returns the response body. Raises `HttpRequestError` on error.
 
 ---
 
-### `downloadFile(client: HttpClient, url, filename: string)`
-### `downloadFile(client: AsyncHttpClient, url, filename): Future[void]`
+### `downloadFile`
 
-Downloads the resource at `url` and writes it to `filename` on disk. Data is streamed — the entire body is never loaded into memory at once.
+```nim
+proc downloadFile*(client: HttpClient, url: Uri | string, filename: string)
+proc downloadFile*(client: AsyncHttpClient, url: Uri | string, filename: string): Future[void]
+```
 
-Raises `HttpRequestError` on 4xx/5xx status codes.  
-Raises `IOError` if the output file cannot be opened for writing.
+#### What it does
+
+Downloads the resource at `url` and saves it directly to `filename` on disk. The body is **streamed** — it is never fully buffered in memory, making this procedure safe for arbitrarily large files.
+
+Raises `HttpRequestError` on 4xx/5xx. Raises `IOError` if the file cannot be opened for writing.
+
+The progress callback (`onProgressChanged`) works normally during a download.
+
+#### Example
 
 ```nim
 # Synchronous
 let client = newHttpClient()
 defer: client.close()
-client.downloadFile("https://example.com/data.zip", "data.zip")
-echo "Download complete!"
+client.downloadFile("https://example.com/large.zip", "large.zip")
 
 # Asynchronous
-import std/asyncdispatch
-
-proc downloadAsync() {.async.} =
+proc dlAsync() {.async.} =
   let client = newAsyncHttpClient()
   defer: client.close()
-  await client.downloadFile("https://example.com/data.zip", "data.zip")
+  await client.downloadFile("https://example.com/large.zip", "large.zip")
 
-waitFor downloadAsync()
+waitFor dlAsync()
 ```
 
 ---
 
-## Constants
+## Proxy Support
 
-### `defUserAgent*: string`
-
-The default User-Agent string. Format: `"Nim-httpclient/<NimVersion>"`.
+### `newProxy`
 
 ```nim
-echo defUserAgent  # "Nim-httpclient/2.x.x"
+proc newProxy*(url: Uri): Proxy
+proc newProxy*(url: string): Proxy
 ```
 
----
+#### What it does
 
-## Exceptions
+Creates a `Proxy` object from a URL. The URL may include credentials for basic authentication (`http://user:pass@host:port`). Supported schemes:
 
-| Type | Parent | When raised |
-|---|---|---|
-| `ProtocolError` | `IOError` | The server violated the HTTP protocol |
-| `HttpRequestError` | `IOError` | The server returned a 4xx or 5xx status (in `getContent`, `postContent`, etc.) |
+- `http://` — plain HTTP proxy.
+- `https://` — HTTPS proxy (requires `-d:ssl`).
+- `socks5h://` — SOCKS5 proxy with **proxy-side** DNS resolution.
 
----
+The two-argument overloads `newProxy(url, auth)` are **deprecated** — embed credentials in the URL instead.
 
-## Complete Examples
-
-### Fetch a page (synchronous)
+#### Example
 
 ```nim
 import std/httpclient
 
-let client = newHttpClient()
-try:
-  echo client.getContent("https://example.com")
-finally:
-  client.close()
+# Plain proxy
+let client = newHttpClient(proxy = newProxy("http://proxy.company.com:8080"))
+
+# Proxy with credentials
+let client2 = newHttpClient(proxy = newProxy("http://alice:s3cret@proxy.company.com:8080"))
+
+# SOCKS5 proxy (DNS resolved on the proxy side)
+let client3 = newHttpClient(proxy = newProxy("socks5h://proxy.company.com:1080"))
+
+# Read proxy from environment
+import std/os
+let proxyUrl = getEnv("http_proxy", getEnv("https_proxy"))
+if proxyUrl.len > 0:
+  let client4 = newHttpClient(proxy = newProxy(proxyUrl))
 ```
 
-### Send JSON data (asynchronous)
+---
+
+## Multipart Form Data
+
+Multipart form data is used for HTML form submissions that include file uploads (`enctype="multipart/form-data"`).
+
+### `newMultipartData` (empty)
 
 ```nim
-import std/[asyncdispatch, httpclient, json]
-
-proc sendJson() {.async.} =
-  let client = newAsyncHttpClient()
-  client.headers = newHttpHeaders({"Content-Type": "application/json"})
-  defer: client.close()
-
-  let body = $(%*{"message": "hello"})
-  let resp = await client.post("https://httpbin.org/post", body = body)
-  echo await resp.body
-
-waitFor sendJson()
+proc newMultipartData*(): MultipartData
 ```
 
-### Download with progress reporting
+Creates an empty `MultipartData` container. Fields and files are added afterwards using `add`, `[]=`, and `addFiles`.
+
+---
+
+### `newMultipartData` (with entries)
+
+```nim
+proc newMultipartData*(xs: MultipartEntries): MultipartData
+```
+
+Creates a `MultipartData` pre-filled with simple text fields.
+
+```nim
+var data = newMultipartData({"action": "login", "format": "json"})
+```
+
+---
+
+### `add` (single field)
+
+```nim
+proc add*(p: MultipartData, name, content: string,
+          filename    = "",
+          contentType = "",
+          useStream   = true)
+```
+
+#### What it does
+
+Adds a single entry to `p`. When `filename` is non-empty, the entry is treated as a file upload — the `Content-Disposition` header will include `filename=`, and `contentType` sets the part's `Content-Type`. Raises `ValueError` if any of the string arguments contain newline characters (which would corrupt the MIME boundary framing).
+
+When `useStream` is `true` (the default) and the entry is a file, the file is streamed from disk during the request. When `false`, it is read into memory immediately.
+
+```nim
+var data = newMultipartData()
+data.add("username", "Alice")
+data.add("avatar", "/home/alice/photo.png", "photo.png", "image/png")
+```
+
+---
+
+### `add` (multiple fields)
+
+```nim
+proc add*(p: MultipartData, xs: MultipartEntries): MultipartData {.discardable.}
+```
+
+Batch-adds a list of text fields. Returns `p` for chaining.
+
+```nim
+data.add({"field1": "value1", "field2": "value2"})
+```
+
+---
+
+### `[]=` (text field)
+
+```nim
+proc `[]=`*(p: MultipartData, name, content: string)
+```
+
+Shorthand for adding a plain text field. Does not set a filename or content type.
+
+```nim
+data["username"] = "Alice"
+data["language"] = "Nim"
+```
+
+---
+
+### `[]=` (file tuple)
+
+```nim
+proc `[]=`*(p: MultipartData, name: string,
+            file: tuple[name, contentType, content: string])
+```
+
+Adds a file entry with manually specified filename, MIME type, and content (as a string). Useful when the file content is already in memory.
+
+```nim
+data["document"] = ("report.html", "text/html",
+                    "<html><body>Hello</body></html>")
+```
+
+---
+
+### `addFiles`
+
+```nim
+proc addFiles*(
+  p         : MultipartData,
+  xs        : openArray[tuple[name, file: string]],
+  mimeDb    = newMimetypes(),
+  useStream = true
+): MultipartData {.discardable.}
+```
+
+#### What it does
+
+Reads files from disk and adds them as file parts. The MIME type is **inferred automatically** from the file extension using `mimeDb`. When `useStream` is `true` the files are read in chunks during the request rather than loaded into memory — suitable for large files.
+
+Raises `IOError` if a file cannot be opened. Pass a pre-constructed `mimeDb` to avoid creating a new MIME database on every call.
+
+```nim
+import std/[httpclient, mimetypes]
+
+let mimes = newMimetypes()
+var data = newMultipartData()
+data.addFiles(
+  {"photo": "images/avatar.jpg", "resume": "docs/cv.pdf"},
+  mimeDb = mimes
+)
+let resp = client.post("https://upload.example.com/profile", multipart = data)
+```
+
+---
+
+### `$` (stringify)
+
+```nim
+proc `$`*(data: MultipartData): string
+```
+
+Converts `MultipartData` to a human-readable string showing each part's name, filename, content type, and content. Useful for debugging.
+
+```nim
+echo $data
+# ------ 0 ------
+# name="username"
+#
+# Alice
+# ------ 1 ------
+# name="avatar"; filename="photo.png"
+# Content-Type: image/png
+# ...
+```
+
+---
+
+## Progress Reporting
+
+Attach a callback to `client.onProgressChanged` to receive download progress updates once per second.
 
 ```nim
 import std/[asyncdispatch, httpclient]
 
 proc onProgress(total, progress, speed: BiggestInt) {.async.} =
   if total > 0:
-    echo progress * 100 div total, "% | ", speed div 1024, " KB/s"
+    echo progress, " / ", total, " bytes  (", speed div 1024, " KB/s)"
+  else:
+    echo progress, " bytes  (total unknown)"
 
-proc main() {.async.} =
+proc downloadWithProgress() {.async.} =
   let client = newAsyncHttpClient()
   client.onProgressChanged = onProgress
   defer: client.close()
-  await client.downloadFile("https://example.com/bigfile.bin", "output.bin")
+  await client.downloadFile("https://example.com/large.iso", "large.iso")
 
-waitFor main()
+waitFor downloadWithProgress()
 ```
 
-### Using a proxy with SSL
+> ⚠️ `total` may be `0` when the server does not send a `Content-Length` header (e.g. chunked transfer encoding).
+
+To remove the callback: `client.onProgressChanged = nil`.
+
+---
+
+## SSL/TLS
+
+HTTPS is activated automatically when the URL scheme is `https://`. You must compile with `-d:ssl`:
+
+```sh
+nim c -d:ssl myapp.nim
+```
+
+Certificate verification is **on by default** (`CVerifyPeer`). To customise:
 
 ```nim
 import std/[net, httpclient]
 
-let proxy = newProxy("http://proxyuser:proxypass@proxy.example.com:3128")
-let ctx = newContext(verifyMode = CVerifyPeer)
-let client = newHttpClient(proxy = proxy, sslContext = ctx, timeout = 10_000)
-defer: client.close()
-echo client.getContent("https://example.com")
-```
+# Verify certificates (default)
+let client = newHttpClient(sslContext = newContext(verifyMode = CVerifyPeer))
 
-### Read proxy from environment variables
+# Disable verification (not recommended for production)
+let clientNoVerify = newHttpClient(sslContext = newContext(verifyMode = CVerifyNone))
 
-```nim
-import std/[os, httpclient]
-
-var proxyUrl = ""
-try:
-  if existsEnv("http_proxy"):
-    proxyUrl = getEnv("http_proxy")
-  elif existsEnv("https_proxy"):
-    proxyUrl = getEnv("https_proxy")
-except ValueError:
-  echo "Failed to read proxy environment variable."
-
-let client = if proxyUrl.len > 0:
-  newHttpClient(proxy = newProxy(proxyUrl))
-else:
-  newHttpClient()
-defer: client.close()
+# Use environment variables SSL_CERT_FILE / SSL_CERT_DIR
+let clientEnv = newHttpClient(sslContext = newContext(verifyMode = CVerifyPeerUseEnvVars))
 ```
 
 ---
 
-## SSL/TLS Support
+## Timeouts
 
-SSL is activated automatically when using `https://` URLs.  
-You must compile with the `ssl` flag: `nim c -d:ssl yourfile.nim`.
-
-Certificate verification modes:
-
-| Mode | Description |
-|---|---|
-| `CVerifyNone` | Certificates are not verified |
-| `CVerifyPeer` | Certificates are verified (default) |
-| `CVerifyPeerUseEnvVars` | Certificates verified + `SSL_CERT_FILE` / `SSL_CERT_DIR` env vars are consulted |
+Only `HttpClient` (synchronous) supports timeouts. The timeout is measured in **milliseconds** and applies to individual **socket operations**, not the total request duration. If the server keeps sending data, the timeout will not trigger; it only fires when a single read/write stalls.
 
 ```nim
-import std/[net, httpclient]
-let client = newHttpClient(sslContext = newContext(verifyMode = CVerifyNone))
+# Raise TimeoutError if any socket operation takes longer than 3 seconds
+let client = newHttpClient(timeout = 3_000)
 ```
 
 ---
 
-## Redirects
+## Quick Reference
 
-The client automatically follows redirects (301, 302, 303, 307, 308).
-
-- **301 / 302 / 303:** Method is changed to `GET` (unless it was `GET` or `HEAD`); body is discarded.
-- **307 / 308:** Method and body are preserved unchanged.
-- When redirecting to a different domain, the `Host` and `Authorization` headers are removed.
-
-```nim
-let client = newHttpClient(maxRedirects = 0)   # disable redirects
-let client2 = newHttpClient(maxRedirects = 10) # increase limit
+```
+Task                                      Procedure
+──────────────────────────────────────────────────────────────────────
+Fetch a page body (raises on error)       getContent(client, url)
+Fetch with full response inspection       get(client, url)
+Check resource existence / metadata       head(client, url)
+Submit a form / JSON body                 post(client, url, body)
+Submit a form / JSON body, get body       postContent(client, url, body)
+Replace a resource                        put(client, url, body)
+Partial update                            patch(client, url, body)
+Delete a resource                         delete(client, url)
+Upload files                              post(client, url, multipart=data)
+Download a file to disk                   downloadFile(client, url, path)
+Custom HTTP method / full control         request(client, url, httpMethod)
 ```

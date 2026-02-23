@@ -1,454 +1,361 @@
-# Справочник модуля `std/httpclient` (Nim)
+# Справочник модуля `httpclient`
 
-> Модуль реализует HTTP-клиент для получения веб-страниц и других данных.  
-> **Предупреждение:** Не передавайте непроверенные данные в URI-парсеры — они не защищены от вредоносных URI.
-
----
-
-## Содержание
-
-1. [Типы и структуры данных](#типы-и-структуры-данных)
-2. [Работа с прокси](#работа-с-прокси)
-3. [Работа с MultipartData](#работа-с-multipartdata)
-4. [Создание клиентов](#создание-клиентов)
-5. [Управление клиентом](#управление-клиентом)
-6. [Работа с ответом сервера (Response)](#работа-с-ответом-сервера)
-7. [HTTP-запросы](#http-запросы)
-8. [Константы](#константы)
-9. [Исключения](#исключения)
+> **Стандартная библиотека Nim — HTTP-клиент**
+> Статус API: частично **нестабильный**; основной API стабилен.
 
 ---
 
-## Типы и структуры данных
+## Общее описание
 
-### `Response`
+`httpclient` предоставляет полноценный HTTP/1.1-клиент как для **синхронного**, так и для **асинхронного** использования. Одного импорта достаточно, чтобы выполнять GET-, POST-, PUT-, PATCH-, DELETE- и HEAD-запросы, обрабатывать редиректы, работать с multipart-формами, потоково передавать большие файлы, отслеживать прогресс загрузки и соединяться через прокси.
 
-Синхронный ответ HTTP-сервера.
+Модуль предоставляет два типа клиентов с идентичным API:
+
+- `HttpClient` — блокирующий, подходит для скриптов и простых утилит.
+- `AsyncHttpClient` — неблокирующий, построен на `asyncdispatch`, подходит для серверов и конкурентного кода.
+
+```nim
+import std/httpclient
+```
+
+Для HTTPS компилируйте с флагом `-d:ssl`.
+
+> ⚠️ **Замечание о безопасности:** парсеры URI в этом модуле не обнаруживают вредоносные URI. Всегда проверяйте ненадёжные данные перед формированием URL запроса.
+
+---
+
+## Типы
+
+### `Response` / `AsyncResponse`
+
+Объект, возвращаемый каждой процедурой запроса. Оба типа предоставляют идентичные поля и процедуры-аксессоры.
 
 ```nim
 type Response* = ref object
-  version*: string       # Версия HTTP ("1.0" или "1.1")
-  status*: string        # Строка статуса, например "200 OK"
-  headers*: HttpHeaders  # Заголовки ответа
-  bodyStream*: Stream    # Поток тела ответа
-```
+  version*: string      # HTTP-версия: "1.0" или "1.1"
+  status*: string       # Строка статуса, например "200 OK"
+  headers*: HttpHeaders # Все заголовки ответа
+  bodyStream*: Stream   # Сырой поток тела (синхронный)
 
-### `AsyncResponse`
-
-Асинхронный ответ HTTP-сервера.
-
-```nim
 type AsyncResponse* = ref object
   version*: string
   status*: string
   headers*: HttpHeaders
-  bodyStream*: FutureStream[string]
+  bodyStream*: FutureStream[string]  # Сырой поток тела (асинхронный)
 ```
-
-### `MultipartData`
-
-Объект для формирования тела запроса типа `multipart/form-data`.
-
-### `MultipartEntries`
-
-Псевдоним для `openArray[tuple[name, content: string]]` — список пар «имя поля / значение».
 
 ### `Proxy`
 
-Объект, описывающий HTTP/SOCKS5-прокси.
+Хранит параметры прокси-соединения. Создаётся через `newProxy`.
 
-```nim
-type Proxy* = ref object
-  url*: Uri
-```
+### `MultipartData`
+
+Хранит поля формы и файлы для запросов `multipart/form-data`. Создаётся через `newMultipartData`.
 
 ### `ProgressChangedProc`
 
-Тип колбэка для отслеживания прогресса загрузки.
+Тип колбека для отчёта о прогрессе загрузки:
 
 ```nim
-type ProgressChangedProc*[ReturnType] =
+type ProgressChangedProc[ReturnType] =
   proc (total, progress, speed: BiggestInt): ReturnType {.closure, gcsafe.}
 ```
 
-- `total` — полный ожидаемый размер (может быть 0, если сервер не передаёт `Content-Length`).
-- `progress` — уже скачанный объём в байтах.
-- `speed` — скорость за последнюю секунду в байтах.
+Для `HttpClient` возвращаемый тип — `void`; для `AsyncHttpClient` — `Future[void]`.
+
+### `ProtocolError`
+
+Генерируется, когда ответ сервера не соответствует HTTP/1.x.
+
+### `HttpRequestError`
+
+Генерируется процедурами `getContent`, `postContent` и всеми остальными `*Content`-процедурами при получении от сервера статуса 4xx или 5xx.
 
 ---
 
-## Работа с прокси
+## Константы
 
-### `newProxy(url: Uri): Proxy`
-### `newProxy(url: string): Proxy`
-
-Создаёт объект прокси. Авторизационные данные можно указать прямо в URL (`http://user:password@host`).
+### `defUserAgent`
 
 ```nim
-import std/httpclient
-
-# Без авторизации
-let proxy = newProxy("http://myproxy.example.com:8080")
-
-# С авторизацией
-let authProxy = newProxy("http://user:secret@myproxy.example.com:8080")
-
-# SOCKS5 с резолвингом DNS на стороне прокси
-let socks5Proxy = newProxy("socks5h://user:secret@myproxy.example.com:1080")
-
-let client = newHttpClient(proxy = proxy)
+const defUserAgent* = "Nim-httpclient/" & NimVersion
 ```
 
-> **Устаревшие перегрузки:** `newProxy(url, auth)` и `proc auth*(p: Proxy)` — помечены как deprecated. Передавайте авторизацию прямо в URL.
+Значение заголовка `User-Agent` по умолчанию, отправляемое с каждым запросом. Можно переопределить для конкретного клиента через `newHttpClient(userAgent = "MyApp/1.0")`.
 
 ---
 
-## Работа с MultipartData
+## Создание клиента
 
-### `newMultipartData(): MultipartData`
+### `newHttpClient`
 
-Создаёт пустой объект `MultipartData`.
-
-```nim
-var data = newMultipartData()
-```
-
----
-
-### `newMultipartData(xs: MultipartEntries): MultipartData`
-
-Создаёт `MultipartData` и сразу заполняет его переданными полями.
-
-```nim
-var data = newMultipartData({"action": "login", "format": "json"})
-```
-
----
-
-### `add(p: MultipartData, name, content: string, filename = "", contentType = "", useStream = true)`
-
-Добавляет поле в `MultipartData`.
-
-| Параметр | Описание |
-|---|---|
-| `name` | Имя поля формы |
-| `content` | Значение поля (или путь к файлу, если `filename` задан) |
-| `filename` | Имя файла (если это файловое поле) |
-| `contentType` | MIME-тип файла |
-| `useStream` | `true` — файл читается потоково с диска; `false` — файл читается полностью в память |
-
-Генерирует `ValueError`, если `name`, `filename` или `contentType` содержат символ новой строки.
-
-```nim
-var data = newMultipartData()
-data.add("comment", "Hello!")
-data.add("avatar", "/path/to/image.png", filename = "avatar.png",
-         contentType = "image/png")
-```
-
----
-
-### `add(p: MultipartData, xs: MultipartEntries): MultipartData`
-
-Добавляет список текстовых полей. Возвращает `p` (можно использовать в цепочке).
-
-```nim
-data.add({"username": "alice", "role": "admin"})
-```
-
----
-
-### `addFiles(p: MultipartData, xs: openArray[tuple[name, file: string]], mimeDb = newMimetypes(), useStream = true): MultipartData`
-
-Добавляет файлы из файловой системы. MIME-тип определяется автоматически по расширению.
-
-- Файл при `useStream = true` читается с диска потоково во время запроса (экономит память).
-- При `useStream = false` — весь файл загружается в память заранее.
-
-Генерирует `IOError`, если файл не может быть открыт.
-
-```nim
-import std/[httpclient, mimetypes]
-
-let mimes = newMimetypes()
-var data = newMultipartData()
-data.addFiles({"report": "report.pdf", "logo": "logo.png"}, mimeDb = mimes)
-
-let client = newHttpClient()
-defer: client.close()
-echo client.postContent("https://example.com/upload", multipart = data)
-```
-
----
-
-### `p[name] = content: string`
-
-Краткая запись для добавления текстового поля.
-
-```nim
-data["username"] = "alice"
-```
-
----
-
-### `p[name] = (filename, contentType, content): tuple`
-
-Краткая запись для добавления файлового поля с явным указанием имени, типа и содержимого.
-
-```nim
-data["page"] = ("index.html", "text/html", "<html>...</html>")
-```
-
----
-
-### `$(data: MultipartData): string`
-
-Преобразует `MultipartData` в читабельную строку для отладки.
-
-```nim
-echo $data
-```
-
----
-
-## Создание клиентов
-
-### `newHttpClient(...): HttpClient`
-
-Создаёт синхронный HTTP-клиент.
-
-**Сигнатура:**
 ```nim
 proc newHttpClient*(
-  userAgent = defUserAgent,
+  userAgent    = defUserAgent,
   maxRedirects = 5,
-  sslContext = getDefaultSSL(),
-  proxy: Proxy = nil,
-  timeout = -1,
-  headers = newHttpHeaders()
+  sslContext   = getDefaultSSL(),
+  proxy        : Proxy = nil,
+  timeout      = -1,
+  headers      = newHttpHeaders()
 ): HttpClient
 ```
 
-| Параметр | Тип | По умолчанию | Описание |
-|---|---|---|---|
-| `userAgent` | `string` | `"Nim-httpclient/<version>"` | Строка User-Agent |
-| `maxRedirects` | `int` | `5` | Макс. число редиректов; `0` — отключить |
-| `sslContext` | `SslContext` | `CVerifyPeer` | Контекст SSL/TLS |
-| `proxy` | `Proxy` | `nil` | HTTP- или SOCKS5-прокси |
-| `timeout` | `int` | `-1` (нет лимита) | Таймаут в миллисекундах |
-| `headers` | `HttpHeaders` | пустые | Глобальные заголовки клиента |
+#### Что делает
+
+Создаёт синхронный HTTP-клиент. Клиент поддерживает постоянное TCP-соединение — повторные запросы к тому же хосту переиспользуют его без переподключения. По завершении работы необходимо вызвать `close()`.
+
+#### Параметры
+
+| Параметр | По умолчанию | Описание |
+|----------|-------------|---------|
+| `userAgent` | `"Nim-httpclient/X.Y.Z"` | Значение заголовка запроса `User-Agent`. |
+| `maxRedirects` | `5` | Максимальное число автоматических редиректов. Установите `0` для отключения. |
+| `sslContext` | системный | Контекст OpenSSL для HTTPS. Управляет режимом проверки сертификатов. |
+| `proxy` | `nil` | Необязательный HTTP- или SOCKS5-прокси. |
+| `timeout` | `-1` (без ограничений) | Таймаут сокета в **миллисекундах**. Применяется к отдельным операциям сокета, а не ко всему запросу. |
+| `headers` | пустые | Заголовки по умолчанию, отправляемые с каждым запросом этого клиента. |
+
+#### Пример
 
 ```nim
 import std/httpclient
 
-# Простой клиент
-let client = newHttpClient()
-defer: client.close()
-echo client.getContent("http://example.com")
+# Минимально: GET в одну строку
+let html = newHttpClient().getContent("http://example.com")
 
-# Клиент с таймаутом 5 секунд и кастомным заголовком
-import std/httpclient
-let client2 = newHttpClient(
-  timeout = 5000,
-  headers = newHttpHeaders({"Accept": "application/json"})
+# Настроенный клиент
+let client = newHttpClient(
+  userAgent    = "MyBot/2.0",
+  timeout      = 5_000,   # таймаут сокета 5 секунд
+  maxRedirects = 3
 )
-defer: client2.close()
+defer: client.close()
+echo client.getContent("https://api.example.com/data")
 ```
 
 ---
 
-### `newAsyncHttpClient(...): AsyncHttpClient`
+### `newAsyncHttpClient`
 
-Создаёт асинхронный HTTP-клиент. Параметры аналогичны `newHttpClient`, за исключением отсутствия `timeout` (пока не реализован).
+```nim
+proc newAsyncHttpClient*(
+  userAgent    = defUserAgent,
+  maxRedirects = 5,
+  sslContext   = getDefaultSSL(),
+  proxy        : Proxy = nil,
+  headers      = newHttpHeaders()
+): AsyncHttpClient
+```
+
+#### Что делает
+
+Создаёт **асинхронный** HTTP-клиент для использования внутри `async`-процедур. Принимает те же параметры, что и `newHttpClient`, кроме `timeout` — для async-клиентов он пока не поддерживается.
+
+Один экземпляр `AsyncHttpClient` обрабатывает **один запрос за раз**. Для параллельных запросов создайте несколько экземпляров.
+
+#### Пример
 
 ```nim
 import std/[asyncdispatch, httpclient]
 
-proc fetchPage(): Future[string] {.async.} =
-  let client = newAsyncHttpClient()
-  defer: client.close()
-  return await client.getContent("http://example.com")
+proc fetchAll(): Future[void] {.async.} =
+  # Два клиента → два параллельных запроса
+  let c1 = newAsyncHttpClient()
+  let c2 = newAsyncHttpClient()
+  defer:
+    c1.close()
+    c2.close()
 
-echo waitFor fetchPage()
+  let (r1, r2) = await all(
+    c1.getContent("https://api.example.com/users"),
+    c2.getContent("https://api.example.com/posts")
+  )
+  echo r1
+  echo r2
+
+waitFor fetchAll()
 ```
-
-> **Важно:** Один экземпляр `AsyncHttpClient` обрабатывает только один запрос одновременно. Для параллельных запросов создавайте несколько клиентов.
 
 ---
 
 ## Управление клиентом
 
-### `close(client: HttpClient | AsyncHttpClient)`
-
-Закрывает сетевое соединение, удерживаемое клиентом.
+### `close`
 
 ```nim
-client.close()
+proc close*(client: HttpClient | AsyncHttpClient)
 ```
 
-Рекомендуется всегда закрывать клиент в блоке `try/finally` или через `defer`.
+#### Что делает
+
+Закрывает TCP-сокет и помечает клиент как отключённый. Всегда должна вызываться по завершении работы с клиентом — используйте `defer`, чтобы гарантировать вызов даже при исключении.
+
+```nim
+let client = newHttpClient()
+defer: client.close()   # выполнится даже если тело бросит исключение
+let body = client.getContent("https://example.com")
+```
 
 ---
 
-### `getSocket(client: HttpClient): Socket`
-### `getSocket(client: AsyncHttpClient): AsyncSocket`
-
-Возвращает сетевой сокет клиента. Полезно для получения деталей соединения.
+### `getSocket`
 
 ```nim
+proc getSocket*(client: HttpClient): Socket
+proc getSocket*(client: AsyncHttpClient): AsyncSocket
+```
+
+#### Что делает
+
+Возвращает низкоуровневый сетевой сокет. Полезно для получения деталей соединения — локального и удалённого адресов.
+
+```nim
+let client = newHttpClient()
+defer: client.close()
+discard client.get("http://example.com")
+
 if client.connected:
-  echo client.getSocket().getLocalAddr()
-  echo client.getSocket().getPeerAddr()
+  echo "Локальный:  ", client.getSocket.getLocalAddr
+  echo "Удалённый:  ", client.getSocket.getPeerAddr
 ```
 
 ---
 
-### Поле `onProgressChanged`
+## Аксессоры ответа
 
-Колбэк для отслеживания прогресса загрузки. Вызывается примерно раз в секунду.
+Все процедуры работают как с `Response`, так и с `AsyncResponse`.
+
+### `code`
 
 ```nim
-import std/[asyncdispatch, httpclient]
-
-proc onProgress(total, progress, speed: BiggestInt) {.async.} =
-  echo "Скачано ", progress, " из ", total, " байт"
-  echo "Скорость: ", speed div 1024, " КБ/с"
-
-proc main() {.async.} =
-  let client = newAsyncHttpClient()
-  client.onProgressChanged = onProgress
-  defer: client.close()
-  discard await client.getContent("https://example.com/bigfile.zip")
-
-waitFor main()
-
-# Отключить колбэк:
-# client.onProgressChanged = nil
+proc code*(response: Response | AsyncResponse): HttpCode
 ```
 
----
-
-### Поле `headers`
-
-`HttpHeaders` — заголовки, которые будут отправлены во всех запросах этого клиента. Можно переопределить для конкретного запроса через параметр `headers` метода `request`.
+Разбирает строку `status` ответа и возвращает числовой HTTP-код в виде `HttpCode`. Генерирует `ValueError`, если строка статуса сформирована некорректно.
 
 ```nim
-client.headers = newHttpHeaders({
-  "Authorization": "Bearer mytoken",
-  "Accept": "application/json"
-})
+let resp = client.get("https://httpbin.org/status/404")
+echo resp.code           # Http404
+echo resp.code == Http200  # false
 ```
 
 ---
 
-### Поле `timeout`
-
-Таймаут в миллисекундах для синхронного клиента. `-1` означает отсутствие таймаута. При превышении генерируется `TimeoutError`.
-
-> **Примечание:** Таймаут ограничивает не всю операцию, а каждый отдельный вызов сокета. Если сервер активно передаёт данные, исключение не возникнет даже при медленном соединении.
+### `contentType`
 
 ```nim
-let client = newHttpClient(timeout = 3000) # 3 секунды
+proc contentType*(response: Response | AsyncResponse): string
+```
+
+Возвращает значение заголовка `Content-Type` ответа, или пустую строку, если заголовок отсутствует.
+
+```nim
+let resp = client.get("https://httpbin.org/json")
+echo resp.contentType   # "application/json"
 ```
 
 ---
 
-## Работа с ответом сервера
+### `contentLength`
 
-### `code(response: Response | AsyncResponse): HttpCode`
+```nim
+proc contentLength*(response: Response | AsyncResponse): int
+```
 
-Возвращает числовой HTTP-код ответа.
-
-Генерирует `ValueError`, если статус нечитаем.
+Возвращает значение заголовка `Content-Length` как целое число. Возвращает `-1`, если заголовок отсутствует. Генерирует `ValueError`, если значение не является целым числом.
 
 ```nim
 let resp = client.get("https://example.com")
-echo resp.code          # 200
-echo resp.code == Http200 # true
+echo resp.contentLength   # например, 1256, или -1 для chunked-ответов
 ```
 
 ---
 
-### `contentType(response: Response | AsyncResponse): string`
-
-Возвращает значение заголовка `Content-Type`.
+### `lastModified`
 
 ```nim
-echo resp.contentType   # "text/html; charset=utf-8"
+proc lastModified*(response: Response | AsyncResponse): DateTime
 ```
 
----
-
-### `contentLength(response: Response | AsyncResponse): int`
-
-Возвращает значение заголовка `Content-Length`. Если заголовок отсутствует — возвращает `-1`.
-
-Генерирует `ValueError`, если значение нечисловое.
+Разбирает заголовок `Last-Modified` и возвращает `DateTime` в UTC. Генерирует `ValueError`, если заголовок отсутствует или не может быть разобран как HTTP-дата.
 
 ```nim
-echo resp.contentLength # 42315
-```
-
----
-
-### `lastModified(response: Response | AsyncResponse): DateTime`
-
-Возвращает дату последней модификации ресурса из заголовка `Last-Modified`.
-
-Генерирует `ValueError` при ошибке парсинга.
-
-```nim
-echo resp.lastModified  # 2024-01-15T10:30:00+00:00
-```
-
----
-
-### `body(response: Response): string`
-### `body(response: AsyncResponse): Future[string]`
-
-Возвращает тело ответа как строку. Результат кешируется — повторное чтение не обращается к сети.
-
-```nim
-# Синхронно
 let resp = client.get("https://example.com")
-echo resp.body
+echo resp.lastModified   # например, 2024-01-15T10:30:00Z
+```
 
-# Асинхронно
-let resp = await client.get("https://example.com")
+---
+
+### `body` (синхронный)
+
+```nim
+proc body*(response: Response): string
+```
+
+Читает и возвращает всё тело ответа в виде строки. Результат **кэшируется**: повторный вызов `body` вернёт уже прочитанные данные без повторного чтения потока.
+
+```nim
+let resp = client.get("https://httpbin.org/get")
+echo resp.body   # полная JSON-строка
+```
+
+---
+
+### `body` (асинхронный)
+
+```nim
+proc body*(response: AsyncResponse): Future[string] {.async.}
+```
+
+Асинхронный аналог: читает и кэширует всё тело, возвращая `Future[string]`.
+
+```nim
+let resp = await client.get("https://httpbin.org/get")
 echo await resp.body
 ```
 
 ---
 
-## HTTP-запросы
+## Процедуры запросов
 
-> Все методы работают как синхронно (`HttpClient`), так и асинхронно (`AsyncHttpClient`).  
-> Асинхронные версии возвращают `Future[...]`.
+Каждая процедура существует в двух вариантах:
 
----
+- `verb(client, url)` → возвращает `Response`/`AsyncResponse`. Позволяет отдельно проверить статус, заголовки и тело.
+- `verbContent(client, url)` → возвращает тело напрямую в виде строки, **и генерирует `HttpRequestError`** при ответах 4xx/5xx.
 
-### `request(client, url, httpMethod, body, headers, multipart): Response | AsyncResponse`
-
-Универсальный метод для выполнения HTTP-запроса любого типа.
+### `request`
 
 ```nim
 proc request*(
-  client: HttpClient | AsyncHttpClient,
-  url: Uri | string,
-  httpMethod: HttpMethod | string = HttpGet,
-  body = "",
-  headers: HttpHeaders = nil,
-  multipart: MultipartData = nil
-): Future[Response | AsyncResponse]
+  client     : HttpClient | AsyncHttpClient,
+  url        : Uri | string,
+  httpMethod : HttpMethod | string = HttpGet,
+  body       = "",
+  headers    : HttpHeaders = nil,
+  multipart  : MultipartData = nil
+): Future[Response | AsyncResponse] {.multisync.}
 ```
 
-| Параметр | Описание |
-|---|---|
-| `url` | Адрес запроса; не должен содержать `\r` или `\n` |
-| `httpMethod` | Метод: `HttpGet`, `HttpPost`, `HttpPut`, `HttpDelete`, `HttpPatch`, `HttpHead`, `HttpOptions`, `HttpTrace`, `HttpConnect` |
-| `body` | Тело запроса |
-| `headers` | Заголовки, действующие только для этого запроса (переопределяют `client.headers`) |
-| `multipart` | Данные формы |
+#### Что делает
+
+Универсальная процедура запроса — все остальные (`get`, `post` и т.д.) делегируют работу ей. Отправляет HTTP-запрос любым методом, с необязательным телом, заголовками для конкретного запроса и multipart-данными. Автоматически следует редиректам до `client.maxRedirects`.
+
+Параметр `headers` **переопределяет** `client.headers` только для этого запроса — изменения не сохраняются.
+
+URL не должен содержать символы новой строки; нарушение вызывает `AssertionDefect`.
+
+Передача строки в `httpMethod` устарела с Nim 1.5 — используйте значения перечисления `HttpMethod` (`HttpGet`, `HttpPost` и т.д.).
+
+#### Поведение при редиректах
+
+| Код статуса | Метод после редиректа | Тело после редиректа |
+|------------|----------------------|---------------------|
+| 301, 302, 303 | Меняется на `GET` (если исходный не GET/HEAD) | Очищается |
+| 307, 308 | Сохраняется | Сохраняется |
+
+При редиректе на другой хост заголовки `Authorization` и `Host` автоматически удаляются, чтобы предотвратить утечку учётных данных.
+
+#### Пример
 
 ```nim
 import std/[httpclient, json]
@@ -456,309 +363,522 @@ import std/[httpclient, json]
 let client = newHttpClient()
 defer: client.close()
 
-let body = $(%*{"name": "Alice", "age": 30})
+# POST с JSON-телом и заголовком Content-Type для этого запроса
+let body = $(%*{"name": "Alice", "score": 42})
 let resp = client.request(
   "https://api.example.com/users",
   httpMethod = HttpPost,
-  body = body,
-  headers = newHttpHeaders({"Content-Type": "application/json"})
+  body       = body,
+  headers    = newHttpHeaders({"Content-Type": "application/json"})
 )
-echo resp.status   # "201 Created"
+echo resp.status    # "201 Created"
 echo resp.body
 ```
 
 ---
 
-### `head(client, url): Response | AsyncResponse`
-
-Выполняет запрос `HEAD`. Тело ответа не возвращается.
+### `head`
 
 ```nim
-let resp = client.head("https://example.com/file.zip")
-echo resp.contentLength  # Размер файла без скачивания
+proc head*(client: HttpClient | AsyncHttpClient,
+           url: Uri | string): Future[Response | AsyncResponse] {.multisync.}
+```
+
+Отправляет HTTP-запрос `HEAD`. Сервер возвращает заголовки, **но не тело**. Полезно для проверки существования ресурса или получения его метаданных без скачивания.
+
+```nim
+let resp = client.head("https://example.com")
+echo resp.code          # Http200
+echo resp.contentLength # размер в байтах без скачивания
 ```
 
 ---
 
-### `get(client, url): Response | AsyncResponse`
+### `get`
 
-Выполняет запрос `GET`. Возвращает полный ответ.
+```nim
+proc get*(client: HttpClient | AsyncHttpClient,
+          url: Uri | string): Future[Response | AsyncResponse] {.multisync.}
+```
+
+Отправляет HTTP-запрос `GET` и возвращает полный объект ответа с доступом к статусу, заголовкам и телу.
 
 ```nim
 let resp = client.get("https://httpbin.org/get")
-echo resp.code
+if resp.code == Http200:
+  echo resp.body
+```
+
+---
+
+### `getContent`
+
+```nim
+proc getContent*(client: HttpClient | AsyncHttpClient,
+                 url: Uri | string): Future[string] {.multisync.}
+```
+
+Отправляет `GET`-запрос и возвращает **только тело** в виде строки. Генерирует `HttpRequestError` при любом ответе 4xx или 5xx, что упрощает обработку ошибок.
+
+```nim
+try:
+  let html = client.getContent("https://example.com")
+  echo html
+except HttpRequestError as e:
+  echo "Ошибка сервера: ", e.msg
+```
+
+---
+
+### `delete`
+
+```nim
+proc delete*(client: HttpClient | AsyncHttpClient,
+             url: Uri | string): Future[Response | AsyncResponse] {.multisync.}
+```
+
+Отправляет HTTP-запрос `DELETE`. Возвращает полный ответ.
+
+```nim
+let resp = client.delete("https://api.example.com/items/42")
+echo resp.status   # "204 No Content"
+```
+
+---
+
+### `deleteContent`
+
+```nim
+proc deleteContent*(client: HttpClient | AsyncHttpClient,
+                    url: Uri | string): Future[string] {.multisync.}
+```
+
+Отправляет `DELETE`-запрос и возвращает тело ответа. Генерирует `HttpRequestError` при 4xx/5xx.
+
+---
+
+### `post`
+
+```nim
+proc post*(
+  client    : HttpClient | AsyncHttpClient,
+  url       : Uri | string,
+  body      = "",
+  multipart : MultipartData = nil
+): Future[Response | AsyncResponse] {.multisync.}
+```
+
+Отправляет HTTP-запрос `POST` с необязательным телом в виде текста или multipart-данными. Возвращает полный ответ.
+
+```nim
+let resp = client.post("https://httpbin.org/post", body = "hello=world")
 echo resp.body
 ```
 
 ---
 
-### `getContent(client, url): string | Future[string]`
-
-Выполняет запрос `GET` и возвращает тело ответа в виде строки.  
-Генерирует `HttpRequestError` при кодах 4xx и 5xx.
+### `postContent`
 
 ```nim
-let html = client.getContent("https://example.com")
-echo html
+proc postContent*(
+  client    : HttpClient | AsyncHttpClient,
+  url       : Uri | string,
+  body      = "",
+  multipart : MultipartData = nil
+): Future[string] {.multisync.}
+```
+
+Отправляет `POST`-запрос и возвращает тело ответа в виде строки. Генерирует `HttpRequestError` при ошибке.
+
+```nim
+let result = client.postContent(
+  "https://api.example.com/echo",
+  body = "ping"
+)
+echo result  # "pong"
 ```
 
 ---
 
-### `delete(client, url): Response | AsyncResponse`
-
-Выполняет запрос `DELETE`.
+### `put`
 
 ```nim
-let resp = client.delete("https://api.example.com/items/42")
+proc put*(
+  client    : HttpClient | AsyncHttpClient,
+  url       : Uri | string,
+  body      = "",
+  multipart : MultipartData = nil
+): Future[Response | AsyncResponse] {.multisync.}
+```
+
+Отправляет HTTP-запрос `PUT`. Семантически используется для **полной замены** существующего ресурса.
+
+```nim
+let resp = client.put(
+  "https://api.example.com/items/1",
+  body = """{"name":"Обновлено"}"""
+)
 echo resp.status
 ```
 
 ---
 
-### `deleteContent(client, url): string | Future[string]`
-
-Выполняет запрос `DELETE` и возвращает тело ответа.  
-Генерирует `HttpRequestError` при кодах 4xx/5xx.
+### `putContent`
 
 ```nim
-echo client.deleteContent("https://api.example.com/items/42")
+proc putContent*(
+  client    : HttpClient | AsyncHttpClient,
+  url       : Uri | string,
+  body      = "",
+  multipart : MultipartData = nil
+): Future[string] {.multisync.}
 ```
+
+Отправляет `PUT`-запрос и возвращает тело ответа. Генерирует `HttpRequestError` при ошибке.
 
 ---
 
-### `post(client, url, body, multipart): Response | AsyncResponse`
-
-Выполняет запрос `POST`.
+### `patch`
 
 ```nim
-# JSON-запрос
-client.headers = newHttpHeaders({"Content-Type": "application/json"})
-let resp = client.post("https://api.example.com/data", body = """{"key":"value"}""")
-
-# Multipart-запрос
-var data = newMultipartData()
-data["file"] = ("report.csv", "text/csv", "a,b,c\n1,2,3")
-let resp2 = client.post("https://example.com/upload", multipart = data)
+proc patch*(
+  client    : HttpClient | AsyncHttpClient,
+  url       : Uri | string,
+  body      = "",
+  multipart : MultipartData = nil
+): Future[Response | AsyncResponse] {.multisync.}
 ```
 
----
-
-### `postContent(client, url, body, multipart): string | Future[string]`
-
-Выполняет `POST` и возвращает тело ответа.  
-Генерирует `HttpRequestError` при кодах 4xx/5xx.
-
-```nim
-let result = client.postContent(
-  "https://api.example.com/echo",
-  body = "Hello!",
-  headers = newHttpHeaders({"Content-Type": "text/plain"}) # через client.headers
-)
-echo result
-```
-
----
-
-### `put(client, url, body, multipart): Response | AsyncResponse`
-
-Выполняет запрос `PUT`.
-
-```nim
-let resp = client.put(
-  "https://api.example.com/items/1",
-  body = """{"name":"Updated"}"""
-)
-```
-
----
-
-### `putContent(client, url, body, multipart): string | Future[string]`
-
-Выполняет `PUT` и возвращает тело ответа. Генерирует `HttpRequestError` при ошибках.
-
----
-
-### `patch(client, url, body, multipart): Response | AsyncResponse`
-
-Выполняет запрос `PATCH`.
+Отправляет HTTP-запрос `PATCH`. Используется для **частичного обновления** ресурса.
 
 ```nim
 let resp = client.patch(
   "https://api.example.com/items/1",
-  body = """{"status":"active"}"""
+  body = """{"status":"archived"}"""
 )
+echo resp.code
 ```
 
 ---
 
-### `patchContent(client, url, body, multipart): string | Future[string]`
+### `patchContent`
 
-Выполняет `PATCH` и возвращает тело ответа. Генерирует `HttpRequestError` при ошибках.
+```nim
+proc patchContent*(
+  client    : HttpClient | AsyncHttpClient,
+  url       : Uri | string,
+  body      = "",
+  multipart : MultipartData = nil
+): Future[string] {.multisync.}
+```
+
+Отправляет `PATCH`-запрос и возвращает тело ответа. Генерирует `HttpRequestError` при ошибке.
 
 ---
 
-### `downloadFile(client: HttpClient, url, filename: string)`
-### `downloadFile(client: AsyncHttpClient, url, filename): Future[void]`
+### `downloadFile`
 
-Скачивает файл по URL и сохраняет на диск. Данные записываются потоково — без загрузки в память целиком.
+```nim
+proc downloadFile*(client: HttpClient, url: Uri | string, filename: string)
+proc downloadFile*(client: AsyncHttpClient, url: Uri | string, filename: string): Future[void]
+```
 
-Генерирует `HttpRequestError` при кодах 4xx/5xx.  
-Генерирует `IOError`, если файл не может быть открыт для записи.
+#### Что делает
+
+Скачивает ресурс по `url` и сохраняет его напрямую в файл `filename` на диске. Тело ответа **передаётся потоком** — никогда полностью не буферизуется в памяти, что делает процедуру безопасной для файлов произвольного размера.
+
+Генерирует `HttpRequestError` при ответах 4xx/5xx. Генерирует `IOError`, если файл не удаётся открыть на запись.
+
+Колбек прогресса (`onProgressChanged`) работает в штатном режиме в процессе скачивания.
+
+#### Пример
 
 ```nim
 # Синхронно
 let client = newHttpClient()
 defer: client.close()
-client.downloadFile("https://example.com/data.zip", "data.zip")
-echo "Файл скачан!"
+client.downloadFile("https://example.com/large.zip", "large.zip")
 
 # Асинхронно
-import std/asyncdispatch
-
-proc downloadAsync() {.async.} =
+proc dlAsync() {.async.} =
   let client = newAsyncHttpClient()
   defer: client.close()
-  await client.downloadFile("https://example.com/data.zip", "data.zip")
+  await client.downloadFile("https://example.com/large.zip", "large.zip")
 
-waitFor downloadAsync()
+waitFor dlAsync()
 ```
 
 ---
 
-## Константы
+## Поддержка прокси
 
-### `defUserAgent*: string`
-
-Значение User-Agent по умолчанию. Формат: `"Nim-httpclient/<NimVersion>"`.
+### `newProxy`
 
 ```nim
-echo defUserAgent  # "Nim-httpclient/2.x.x"
+proc newProxy*(url: Uri): Proxy
+proc newProxy*(url: string): Proxy
 ```
 
----
+#### Что делает
 
-## Исключения
+Создаёт объект `Proxy` из URL. URL может содержать учётные данные для базовой аутентификации (`http://user:pass@host:port`). Поддерживаемые схемы:
 
-| Тип | Наследует | Когда возникает |
-|---|---|---|
-| `ProtocolError` | `IOError` | Сервер нарушил HTTP-протокол |
-| `HttpRequestError` | `IOError` | Сервер вернул ошибку 4xx или 5xx (в `getContent`, `postContent` и т.д.) |
+- `http://` — обычный HTTP-прокси.
+- `https://` — HTTPS-прокси (требует `-d:ssl`).
+- `socks5h://` — SOCKS5-прокси с **разрешением DNS на стороне прокси**.
 
----
+Двухаргументные перегрузки `newProxy(url, auth)` **устарели** — включайте учётные данные прямо в URL.
 
-## Полные примеры
-
-### Скачать страницу (синхронно)
+#### Пример
 
 ```nim
 import std/httpclient
 
-let client = newHttpClient()
-try:
-  echo client.getContent("https://example.com")
-finally:
-  client.close()
+# Простой прокси
+let client = newHttpClient(proxy = newProxy("http://proxy.company.com:8080"))
+
+# Прокси с учётными данными
+let client2 = newHttpClient(proxy = newProxy("http://alice:s3cret@proxy.company.com:8080"))
+
+# SOCKS5-прокси (DNS разрешается на стороне прокси)
+let client3 = newHttpClient(proxy = newProxy("socks5h://proxy.company.com:1080"))
+
+# Получить прокси из переменных окружения
+import std/os
+let proxyUrl = getEnv("http_proxy", getEnv("https_proxy"))
+if proxyUrl.len > 0:
+  let client4 = newHttpClient(proxy = newProxy(proxyUrl))
 ```
 
-### Отправить JSON (асинхронно)
+---
+
+## Multipart-данные форм
+
+Multipart-данные используются для HTML-форм с загрузкой файлов (`enctype="multipart/form-data"`).
+
+### `newMultipartData` (пустой)
 
 ```nim
-import std/[asyncdispatch, httpclient, json]
-
-proc sendJson() {.async.} =
-  let client = newAsyncHttpClient()
-  client.headers = newHttpHeaders({"Content-Type": "application/json"})
-  defer: client.close()
-
-  let body = $(%*{"message": "hello"})
-  let resp = await client.post("https://httpbin.org/post", body = body)
-  echo await resp.body
-
-waitFor sendJson()
+proc newMultipartData*(): MultipartData
 ```
 
-### Загрузка файла с прогрессом
+Создаёт пустой контейнер `MultipartData`. Поля и файлы добавляются затем через `add`, `[]=` и `addFiles`.
+
+---
+
+### `newMultipartData` (с полями)
+
+```nim
+proc newMultipartData*(xs: MultipartEntries): MultipartData
+```
+
+Создаёт `MultipartData`, сразу заполненный текстовыми полями.
+
+```nim
+var data = newMultipartData({"action": "login", "format": "json"})
+```
+
+---
+
+### `add` (одно поле)
+
+```nim
+proc add*(p: MultipartData, name, content: string,
+          filename    = "",
+          contentType = "",
+          useStream   = true)
+```
+
+#### Что делает
+
+Добавляет одну запись в `p`. Если `filename` непустой, запись считается файловым вложением — заголовок `Content-Disposition` будет включать `filename=`, а `contentType` задаёт MIME-тип части. Генерирует `ValueError`, если любой из строковых аргументов содержит символы новой строки (это повредило бы MIME-разграничение).
+
+Когда `useStream` равен `true` (по умолчанию) и запись является файлом, он читается с диска потоком во время отправки запроса. При `false` — считывается в память немедленно.
+
+```nim
+var data = newMultipartData()
+data.add("username", "Alice")
+data.add("avatar", "/home/alice/photo.png", "photo.png", "image/png")
+```
+
+---
+
+### `add` (несколько полей)
+
+```nim
+proc add*(p: MultipartData, xs: MultipartEntries): MultipartData {.discardable.}
+```
+
+Пакетно добавляет список текстовых полей. Возвращает `p` для цепочки вызовов.
+
+```nim
+data.add({"field1": "value1", "field2": "value2"})
+```
+
+---
+
+### `[]=` (текстовое поле)
+
+```nim
+proc `[]=`*(p: MultipartData, name, content: string)
+```
+
+Сокращённая запись для добавления простого текстового поля — без имени файла и без типа содержимого.
+
+```nim
+data["username"] = "Alice"
+data["language"] = "Nim"
+```
+
+---
+
+### `[]=` (файловый кортеж)
+
+```nim
+proc `[]=`*(p: MultipartData, name: string,
+            file: tuple[name, contentType, content: string])
+```
+
+Добавляет файловую запись с явно заданными именем файла, MIME-типом и содержимым (в виде строки). Удобно, когда содержимое файла уже находится в памяти.
+
+```nim
+data["document"] = ("report.html", "text/html",
+                    "<html><body>Привет</body></html>")
+```
+
+---
+
+### `addFiles`
+
+```nim
+proc addFiles*(
+  p         : MultipartData,
+  xs        : openArray[tuple[name, file: string]],
+  mimeDb    = newMimetypes(),
+  useStream = true
+): MultipartData {.discardable.}
+```
+
+#### Что делает
+
+Читает файлы с диска и добавляет их как части multipart. MIME-тип **определяется автоматически** по расширению файла с помощью `mimeDb`. При `useStream = true` файлы читаются чанками во время запроса, а не загружаются в память — подходит для больших файлов.
+
+Генерирует `IOError`, если файл не удаётся открыть. Передайте предварительно созданный `mimeDb`, чтобы избежать создания новой базы MIME-типов при каждом вызове.
+
+```nim
+import std/[httpclient, mimetypes]
+
+let mimes = newMimetypes()
+var data = newMultipartData()
+data.addFiles(
+  {"photo": "images/avatar.jpg", "resume": "docs/cv.pdf"},
+  mimeDb = mimes
+)
+let resp = client.post("https://upload.example.com/profile", multipart = data)
+```
+
+---
+
+### `$` (строковое представление)
+
+```nim
+proc `$`*(data: MultipartData): string
+```
+
+Преобразует `MultipartData` в читаемую строку, показывая имя, имя файла, тип содержимого и содержимое каждой части. Удобно для отладки.
+
+```nim
+echo $data
+# ------ 0 ------
+# name="username"
+#
+# Alice
+# ------ 1 ------
+# name="avatar"; filename="photo.png"
+# Content-Type: image/png
+# ...
+```
+
+---
+
+## Отчёт о прогрессе
+
+Назначьте колбек `client.onProgressChanged`, чтобы получать обновления прогресса загрузки раз в секунду.
 
 ```nim
 import std/[asyncdispatch, httpclient]
 
 proc onProgress(total, progress, speed: BiggestInt) {.async.} =
   if total > 0:
-    echo progress * 100 div total, "% | ", speed div 1024, " KB/s"
+    echo progress, " / ", total, " байт  (", speed div 1024, " КБ/с)"
+  else:
+    echo progress, " байт  (общий размер неизвестен)"
 
-proc main() {.async.} =
+proc downloadWithProgress() {.async.} =
   let client = newAsyncHttpClient()
   client.onProgressChanged = onProgress
   defer: client.close()
-  await client.downloadFile("https://example.com/bigfile.bin", "output.bin")
+  await client.downloadFile("https://example.com/large.iso", "large.iso")
 
-waitFor main()
+waitFor downloadWithProgress()
 ```
 
-### Использование прокси с SSL
+> ⚠️ Параметр `total` может быть равен `0`, если сервер не отправляет заголовок `Content-Length` (например, при chunked transfer encoding).
 
-```nim
-import std/[net, httpclient]
-
-let proxy = newProxy("http://proxyuser:proxypass@proxy.example.com:3128")
-let ctx = newContext(verifyMode = CVerifyPeer)
-let client = newHttpClient(proxy = proxy, sslContext = ctx, timeout = 10_000)
-defer: client.close()
-echo client.getContent("https://example.com")
-```
-
-### Получить прокси из переменных окружения
-
-```nim
-import std/[os, httpclient]
-
-var proxyUrl = ""
-try:
-  if existsEnv("http_proxy"):
-    proxyUrl = getEnv("http_proxy")
-  elif existsEnv("https_proxy"):
-    proxyUrl = getEnv("https_proxy")
-except ValueError:
-  echo "Ошибка при чтении переменной окружения прокси"
-
-let client = if proxyUrl.len > 0:
-  newHttpClient(proxy = newProxy(proxyUrl))
-else:
-  newHttpClient()
-defer: client.close()
-```
+Чтобы убрать колбек: `client.onProgressChanged = nil`.
 
 ---
 
 ## SSL/TLS
 
-Поддержка SSL активируется автоматически при использовании `https://`-ссылок.  
-Требуется компиляция с флагом: `nim c -d:ssl yourfile.nim`.
+HTTPS активируется автоматически, когда схема URL — `https://`. Необходимо скомпилировать с `-d:ssl`:
 
-Доступные режимы верификации сертификата:
+```sh
+nim c -d:ssl myapp.nim
+```
 
-| Режим | Описание |
-|---|---|
-| `CVerifyNone` | Сертификаты не проверяются |
-| `CVerifyPeer` | Сертификаты проверяются (по умолчанию) |
-| `CVerifyPeerUseEnvVars` | Проверяются + учитываются `SSL_CERT_FILE` и `SSL_CERT_DIR` |
+Проверка сертификатов **включена по умолчанию** (`CVerifyPeer`). Для настройки:
 
 ```nim
 import std/[net, httpclient]
-let client = newHttpClient(sslContext = newContext(verifyMode = CVerifyNone))
+
+# Проверять сертификаты (по умолчанию)
+let client = newHttpClient(sslContext = newContext(verifyMode = CVerifyPeer))
+
+# Отключить проверку (не рекомендуется для продакшна)
+let clientNoVerify = newHttpClient(sslContext = newContext(verifyMode = CVerifyNone))
+
+# Использовать переменные окружения SSL_CERT_FILE / SSL_CERT_DIR
+let clientEnv = newHttpClient(sslContext = newContext(verifyMode = CVerifyPeerUseEnvVars))
 ```
 
 ---
 
-## Перенаправления (Redirects)
+## Таймауты
 
-Клиент автоматически следует редиректам (301, 302, 303, 307, 308).
-
-- 301/302/303: метод меняется на `GET`, тело удаляется (кроме `GET`/`HEAD`).
-- 307/308: метод и тело сохраняются.
-- При смене домена удаляются заголовки `Host` и `Authorization`.
+Только `HttpClient` (синхронный) поддерживает таймаут. Он задаётся в **миллисекундах** и применяется к отдельным **операциям сокета**, а не ко всему запросу. Если сервер продолжает передавать данные — таймаут не сработает; он срабатывает только когда отдельная операция чтения/записи зависает.
 
 ```nim
-let client = newHttpClient(maxRedirects = 0) # отключить редиректы
-let client2 = newHttpClient(maxRedirects = 10) # увеличить лимит
+# Генерировать TimeoutError, если любая операция сокета занимает более 3 секунд
+let client = newHttpClient(timeout = 3_000)
+```
+
+---
+
+## Краткая шпаргалка
+
+```
+Задача                                         Процедура
+──────────────────────────────────────────────────────────────────────
+Получить тело страницы (ошибка при 4xx/5xx)    getContent(client, url)
+Получить полный ответ                          get(client, url)
+Проверить существование / метаданные           head(client, url)
+Отправить форму / JSON                         post(client, url, body)
+Отправить форму / JSON, получить тело          postContent(client, url, body)
+Заменить ресурс целиком                        put(client, url, body)
+Частично обновить ресурс                       patch(client, url, body)
+Удалить ресурс                                 delete(client, url)
+Загрузить файлы на сервер                      post(client, url, multipart=data)
+Скачать файл на диск                           downloadFile(client, url, path)
+Произвольный метод / полный контроль           request(client, url, httpMethod)
 ```
