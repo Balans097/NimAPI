@@ -2,7 +2,6 @@
 
 > **Module:** `std/sysrand`  
 > **Language:** Nim  
-> **Added in:** Nim 1.6  
 > **Purpose:** Cryptographically secure random bytes sourced directly from the operating system — suitable for key generation, nonces, tokens, salts, and other security-sensitive purposes.
 
 > ⚠️ **Security notice:** This module has not been audited by cryptography professionals. It is provided as-is. For production systems handling sensitive data, request an independent security audit before relying on this module.
