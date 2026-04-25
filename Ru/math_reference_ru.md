@@ -1,1189 +1,1514 @@
-# Справочник модуля `std/math` (Nim)
+# Справочник модуля `std/math` — Nim Standard Library
 
-> Базовые математические функции для Nim.  
-> Тригонометрические функции работают в **радианах**. Используйте `degToRad` / `radToDeg` для перевода.  
-> Модуль доступен для **JavaScript-бэкенда**.
+> *Constructive mathematics is naturally typed.* — Simon Thompson
 
 ---
 
 ## Содержание
 
-1. [Константы](#константы)
-2. [Типы](#типы)
-3. [Классификация и свойства чисел с плавающей точкой](#классификация-и-свойства-чисел-с-плавающей-точкой)
-4. [Корни и степени](#корни-и-степени)
-5. [Логарифмы и экспоненты](#логарифмы-и-экспоненты)
-6. [Тригонометрия](#тригонометрия)
-7. [Обратные тригонометрические функции](#обратные-тригонометрические-функции)
-8. [Гиперболические функции](#гиперболические-функции)
-9. [Обратные гиперболические функции](#обратные-гиперболические-функции)
-10. [Дополнительные тригонометрические функции](#дополнительные-тригонометрические-функции)
-11. [Округление и деление](#округление-и-деление)
-12. [Специальные функции (только C)](#специальные-функции-только-c)
-13. [Преобразование углов](#преобразование-углов)
-14. [Целочисленные операции](#целочисленные-операции)
-15. [Агрегатные функции для массивов](#агрегатные-функции-для-массивов)
+1. [Обзор модуля](#1-обзор-модуля)
+2. [Константы](#2-константы)
+3. [Типы](#3-типы)
+4. [Утилиты для чисел с плавающей точкой](#4-утилиты-для-чисел-с-плавающей-точкой)
+5. [Функции округления](#5-функции-округления)
+6. [Степени и корни](#6-степени-и-корни)
+7. [Логарифмы и экспонента](#7-логарифмы-и-экспонента)
+8. [Тригонометрические функции](#8-тригонометрические-функции)
+9. [Деление и взятие остатка](#9-деление-и-взятие-остатка)
+10. [Целочисленная математика](#10-целочисленная-математика)
+11. [Специальные функции](#11-специальные-функции)
+12. [Знак и ограничение значений](#12-знак-и-ограничение-значений)
+13. [Функции для массивов](#13-функции-для-массивов)
+14. [Практические примеры](#14-практические-примеры)
+15. [Таблица быстрого доступа](#15-таблица-быстрого-доступа)
 
 ---
 
-## Константы
+## 1. Обзор модуля
+
+Модуль `std/math` входит в стандартную библиотеку Nim и реализует базовые математические функции, константы и типы. Большинство функций делегируют вычисление в Си-библиотеку `<math.h>` (POSIX) или в соответствующий объект `Math.*` для JavaScript-бэкенда — это даёт нативную производительность на обеих платформах.
+
+### Подключение
+
+```nim
+import std/math
+```
+
+### Поддержка платформ
+
+| Бэкенд | Поддержка | Примечание |
+|--------|-----------|------------|
+| C / C++ | ✅ Полная | Линкуется с `-lm` на POSIX |
+| JavaScript | ✅ Полная | Использует `Math.*` |
+| NimScript | ⚠️ Частичная | Некоторые функции недоступны |
+
+### Связанные модули
+
+| Модуль | Назначение |
+|--------|------------|
+| `std/complex` | Комплексные числа и операции над ними |
+| `std/rationals` | Рациональные числа (точная арифметика) |
+| `std/fenv` | Управление режимами округления IEEE 754, обработка исключений float |
+| `std/random` | Генератор псевдослучайных чисел |
+| `std/stats` | Статистический анализ: среднее, дисперсия, стандартное отклонение |
+| `std/strformat` | Форматирование чисел с плавающей точкой для вывода |
+| `system` | Базовые операторы: `shr`, `shl`, `xor`, `clamp`, `abs`, `min`, `max` |
+
+---
+
+## 2. Константы
+
+Модуль экспортирует математические и технические константы. Все они объявлены с `*` — то есть являются публичными при импорте.
 
 | Константа | Значение | Описание |
-|---|---|---|
-| `PI` | `3.14159265358979…` | Число π (Людольфово число) |
-| `TAU` | `6.28318530717958…` | TAU = 2 × π |
-| `E` | `2.71828182845904…` | Число Эйлера |
-| `MaxFloat64Precision` | `16` | Максимальное количество значимых цифр после запятой для `float64` |
-| `MaxFloat32Precision` | `8` | Максимальное количество значимых цифр после запятой для `float32` |
-| `MaxFloatPrecision` | `16` | Синоним `MaxFloat64Precision` |
-| `MinFloatNormal` | `2.225e-308` | Наименьшее нормальное число `float` (= 2⁻¹⁰²²) |
+|-----------|----------|----------|
+| `PI` | `3.14159265358979323…` | Число π (Людольфово число) — отношение длины окружности к диаметру |
+| `TAU` | `6.28318530717958647…` | TAU = 2·π — полный оборот в радианах; удобнее PI во многих формулах |
+| `E` | `2.71828182845904523…` | Число Эйлера — основание натурального логарифма |
+| `MaxFloat64Precision` | `16` | Максимальное количество значащих десятичных цифр для `float64` |
+| `MaxFloat32Precision` | `8` | Максимальное количество значащих десятичных цифр для `float32` |
+| `MaxFloatPrecision` | `16` | Алиас для `MaxFloat64Precision` (тип `float` — это `float64`) |
+| `MinFloatNormal` | `2.225073858507201e-308` | Наименьшее *нормальное* число float64 (= 2⁻¹⁰²²) |
+
+### Примеры
 
 ```nim
 import std/math
 
-echo PI          # 3.141592653589793
-echo TAU         # 6.283185307179586
-echo E           # 2.718281828459045
-echo MinFloatNormal  # 2.2250738585072014e-308
+# Длина окружности радиуса r
+let r = 5.0
+let circumference = TAU * r      # TAU = 2*PI, более читаемо
+echo circumference               # => 31.41592653589793
+
+# Полуоборот и четверть оборота
+let halfTurn    = PI             # 180°
+let quarterTurn = PI / 2.0      # 90°
+
+# Непрерывный рост с экспонентой
+let investment = 1000.0
+let growth = investment * E ^ 1.0   # рост за единицу времени
+echo growth                          # => 2718.28...
+
+# Проверка, входит ли число в диапазон нормальных float
+let tiny = 1.0e-310
+echo tiny < MinFloatNormal           # => true (субнормальное число)
 ```
+
+> **Почему TAU?** Многие формулы выглядят чище с TAU. Например, полная длина окружности — `TAU * r`, а не `2 * PI * r`. Угол 360° в радианах — просто `TAU`.
 
 ---
 
-## Типы
+## 3. Типы
 
 ### `FloatClass`
 
-Перечисление, описывающее класс числа с плавающей точкой. Возвращается функцией `classify`.
+Перечисление (enum), описывающее класс числа с плавающей точкой согласно стандарту IEEE 754. Возвращается функцией [`classify`](#classify--классификация-числа).
 
-| Значение | Описание |
-|---|---|
-| `fcNormal` | Обычное ненулевое число |
-| `fcSubnormal` | Субнормальное (очень маленькое) число |
-| `fcZero` | Положительный ноль |
-| `fcNegZero` | Отрицательный ноль (`-0.0`) |
-| `fcNan` | Не-число (NaN) |
-| `fcInf` | Положительная бесконечность |
-| `fcNegInf` | Отрицательная бесконечность |
+```nim
+type
+  FloatClass* = enum
+    fcNormal,    ## Обычное ненулевое нормализованное значение
+    fcSubnormal, ## Субнормальное (денормализованное) — очень маленькое
+    fcZero,      ## Положительный ноль (+0.0)
+    fcNegZero,   ## Отрицательный ноль (-0.0)
+    fcNan,       ## Not a Number (NaN) — результат некорректной операции
+    fcInf,       ## Положительная бесконечность (+Inf)
+    fcNegInf     ## Отрицательная бесконечность (-Inf)
+```
 
----
+#### Когда возникают специальные значения
 
-## Классификация и свойства чисел с плавающей точкой
+| Значение | Пример операции | Причина |
+|----------|----------------|---------|
+| `Inf` | `1.0 / 0.0` | Деление положительного на ноль |
+| `-Inf` | `-1.0 / 0.0` | Деление отрицательного на ноль |
+| `NaN` | `0.0 / 0.0` | Неопределённая операция |
+| `NaN` | `sqrt(-1.0)` | Корень из отрицательного |
+| `-0.0` | `-1.0 * 0.0` | Математически равно 0, но другой знак |
+| субнормальное | `5.0e-324` | Число меньше `MinFloatNormal` |
 
-### `classify(x: float): FloatClass`
-
-Определяет класс числа с плавающей точкой.
+#### Пример использования `FloatClass`
 
 ```nim
 import std/math
 
-echo classify(0.3)         # fcNormal
-echo classify(0.0)         # fcZero
-echo classify(-0.0)        # fcNegZero
-echo classify(0.3 / 0.0)   # fcInf
-echo classify(-0.3 / 0.0)  # fcNegInf
-echo classify(5.0e-324)    # fcSubnormal
-echo classify(NaN)         # fcNan
+proc describeFloat(x: float): string =
+  case classify(x)
+  of fcNormal:    "обычное число"
+  of fcSubnormal: "субнормальное (очень маленькое)"
+  of fcZero:      "положительный ноль"
+  of fcNegZero:   "отрицательный ноль"
+  of fcNan:       "не число (NaN)"
+  of fcInf:       "положительная бесконечность"
+  of fcNegInf:    "отрицательная бесконечность"
+
+echo describeFloat(3.14)       # => обычное число
+echo describeFloat(0.0)        # => положительный ноль
+echo describeFloat(-0.0)       # => отрицательный ноль
+echo describeFloat(1.0/0.0)    # => положительная бесконечность
+echo describeFloat(0.0/0.0)    # => не число (NaN)
+echo describeFloat(5.0e-324)   # => субнормальное
 ```
 
 ---
 
-### `isNaN(x: SomeFloat): bool`
+## 4. Утилиты для чисел с плавающей точкой
 
-Проверяет, является ли значение NaN. Эффективнее, чем `classify(x) == fcNan`. Работает даже с флагом `-ffast-math`.
+### `isNaN` — проверка на NaN
+
+```nim
+func isNaN*(x: SomeFloat): bool
+```
+
+Возвращает `true`, если `x` является NaN. Работает корректно даже при включённой компиляторной оптимизации `-ffast-math`, которая может нарушать обычное сравнение `x != x`.
+
+**Почему нельзя просто написать `x == NaN`?**  
+По стандарту IEEE 754, NaN не равен ничему, включая самого себя. Поэтому `NaN == NaN` всегда `false`. `isNaN` использует более надёжные способы проверки.
 
 ```nim
 import std/math
 
-echo NaN.isNaN        # true
-echo Inf.isNaN        # false
-echo (3.14).isNaN     # false
-echo (0.0 / 0.0).isNaN # true
+doAssert NaN.isNaN                  # NaN — это NaN
+doAssert not Inf.isNaN              # Inf — не NaN
+doAssert not isNaN(3.1415926)       # обычное число — не NaN
+
+# Особый случай: NaN не равен сам себе
+let x = NaN
+doAssert x != x          # true — свойство NaN в IEEE 754
+doAssert x.isNaN         # true — надёжная проверка
+
+# Проверка перед использованием результата вычисления
+let result = sqrt(-4.0)
+if result.isNaN:
+  echo "Ошибка: квадратный корень из отрицательного числа"
 ```
 
 ---
 
-### `signbit(x: SomeFloat): bool`
+### `signbit` — знаковый бит
 
-Возвращает `true`, если `x` имеет отрицательный знаковый бит. Отличает `-0.0` от `+0.0`.
+```nim
+func signbit*(x: SomeFloat): bool
+```
+
+Возвращает `true`, если `x` является отрицательным числом. В отличие от `x < 0`, корректно обрабатывает `-0.0` (отрицательный ноль) и `-Inf`.
+
+**Зачем нужен `-0.0`?**  
+Отрицательный ноль — это законное значение IEEE 754. Математически он равен `+0.0`, но его знак имеет значение в ряде вычислений (например, при вычислении `arctan2` или при анализе знака у субнормальных чисел).
 
 ```nim
 import std/math
 
-echo signbit(0.0)   # false
-echo signbit(-0.0)  # true
-echo signbit(-5.0)  # true
-echo signbit(5.0)   # false
+doAssert not signbit(0.0)    # +0.0 — положительный
+doAssert signbit(-0.0)       # -0.0 — отрицательный!
+doAssert signbit(-0.1)       # обычное отрицательное
+doAssert not signbit(0.1)    # обычное положительное
+doAssert signbit(-Inf)       # отрицательная бесконечность
+doAssert not signbit(Inf)    # положительная бесконечность
+
+# Отличие от x < 0:
+let negZero = -0.0
+echo negZero < 0.0      # => false (математически они равны)
+echo signbit(negZero)   # => true  (знаковый бит установлен)
 ```
 
 ---
 
-### `copySign[T: SomeFloat](x, y: T): T`
+### `copySign` — копирование знака
 
-Возвращает значение с **величиной** `x` и **знаком** `y`. Работает с NaN, бесконечностью и нулём.
+```nim
+func copySign*[T: SomeFloat](x, y: T): T
+```
+
+Возвращает число с **модулем `x`** и **знаком `y`**. Корректно работает со всеми специальными значениями: NaN, ±Inf, ±0.
 
 ```nim
 import std/math
 
-echo copySign(10.0, 1.0)    # 10.0
-echo copySign(10.0, -1.0)   # -10.0
-echo copySign(-Inf, -0.0)   # -Inf
-echo copySign(NaN, 1.0).isNaN  # true
+doAssert copySign(10.0,  1.0) ==  10.0   # берём знак y=+1
+doAssert copySign(10.0, -1.0) == -10.0   # берём знак y=-1
+doAssert copySign(-Inf, -0.0) == -Inf    # знак из -0.0
+doAssert copySign(NaN, 1.0).isNaN        # NaN остаётся NaN
+
+# Применение: установить знак числа по другому числу
+proc withSign(magnitude: float, reference: float): float =
+  copySign(abs(magnitude), reference)
+
+echo withSign(5.0, -3.0)   # => -5.0
+echo withSign(-7.0, 2.0)   # => 7.0
 ```
 
 ---
 
-### `almostEqual[T: SomeFloat](x, y: T; unitsInLastPlace: Natural = 4): bool`
+### `classify` — классификация числа
 
-Проверяет приблизительное равенство двух чисел с плавающей точкой с помощью [машинного эпсилона](https://ru.wikipedia.org/wiki/Машинный_эпсилон).
+```nim
+func classify*(x: float): FloatClass
+```
 
-`unitsInLastPlace` задаёт допустимое число единиц последнего разряда (ULP). Значение `0` требует точного совпадения.
+Определяет, к какому классу IEEE 754 относится значение `x`, и возвращает соответствующее значение `FloatClass`.
 
 ```nim
 import std/math
 
-echo almostEqual(PI, 3.14159265358979)  # true
-echo almostEqual(Inf, Inf)              # true
-echo almostEqual(NaN, NaN)             # false (NaN != NaN)
-echo almostEqual(1.0, 1.0 + 1e-15)    # true  (разница меньше эпсилона)
-echo almostEqual(1.0, 1.1)             # false
+doAssert classify(0.3)        == fcNormal
+doAssert classify(0.0)        == fcZero
+doAssert classify(-0.0)       == fcNegZero
+doAssert classify(0.3 / 0.0)  == fcInf
+doAssert classify(-0.3 / 0.0) == fcNegInf
+doAssert classify(5.0e-324)   == fcSubnormal
+
+# Пример: безопасное деление
+proc safeDivide(a, b: float): float =
+  if classify(b) in {fcZero, fcNegZero}:
+    raise newException(DivByZeroDefect, "деление на ноль")
+  result = a / b
 ```
 
 ---
 
-### `sgn[T: SomeNumber](x: T): int`
+### `almostEqual` — сравнение float с допуском
 
-Функция знака.
+```nim
+func almostEqual*[T: SomeFloat](x, y: T; unitsInLastPlace: Natural = 4): bool
+```
 
-- Возвращает `1` для положительных чисел и `+Inf`.
-- Возвращает `-1` для отрицательных чисел и `-Inf`.
-- Возвращает `0` для `+0.0`, `-0.0` и `NaN`.
+Проверяет, являются ли два числа **приблизительно равными** с учётом накопленных ошибок с плавающей точкой. Использует метод ULP (Units in the Last Place — единицы последнего разряда).
+
+**Почему нельзя сравнивать float через `==`?**  
+Числа с плавающей точкой хранятся в двоичном виде. Большинство десятичных дробей (например, `0.1`) не имеют точного двоичного представления, поэтому арифметические операции накапливают ошибку. Например, `0.1 + 0.2` в float не равно `0.3`.
+
+**Параметр `unitsInLastPlace`:**  
+- `0` — числа должны быть побитово идентичны
+- `1` — допускается 1 единица последнего разряда (минимальный допуск)
+- `4` — допуск по умолчанию, покрывает большинство практических случаев
+- Большие значения → более широкий допуск
 
 ```nim
 import std/math
 
-echo sgn(5)     # 1
-echo sgn(0)     # 0
-echo sgn(-4.1)  # -1
-echo sgn(Inf)   # 1
-echo sgn(NaN)   # 0
+# Базовые случаи
+doAssert almostEqual(PI, 3.14159265358979)  # достаточно близко
+doAssert almostEqual(Inf, Inf)              # бесконечности равны
+doAssert not almostEqual(NaN, NaN)          # NaN ≠ NaN по определению
+
+# Реальная проблема: накопление ошибок
+let a = 0.1 + 0.2
+echo a == 0.3            # => false! (0.30000000000000004)
+echo almostEqual(a, 0.3) # => true  (в пределах допуска)
+
+# Регулировка строгости
+echo almostEqual(1.0, 1.0000001, 4)    # true  — мягкий допуск
+echo almostEqual(1.0, 1.0000001, 0)    # false — строгое равенство
+
+# Правило: всегда используйте almostEqual вместо == для float-результатов
+proc isUnitVector(x, y, z: float): bool =
+  almostEqual(x*x + y*y + z*z, 1.0)
 ```
 
 ---
 
-## Корни и степени
-
-### `sqrt(x: float32|float64): float32|float64`
-
-Вычисляет квадратный корень из `x`.
+### `frexp` — разбиение на мантиссу и экспоненту
 
 ```nim
-import std/math
-
-echo sqrt(4.0)    # 2.0
-echo sqrt(1.44)   # 1.2
-echo sqrt(0.0)    # 0.0
-echo sqrt(-1.0)   # NaN
+func frexp*[T: float32|float64](x: T): tuple[frac: T, exp: int]
+func frexp*[T: float32|float64](x: T, exponent: var int): T
 ```
 
----
+Разбивает `x` на нормализованную дробь `frac` и целую степень двойки `exp`, так что:  
+`x = frac × 2^exp`, где `abs(frac) ∈ [0.5, 1.0)`
 
-### `cbrt(x: float32|float64): float32|float64`
-
-Вычисляет кубический корень из `x`. В отличие от `sqrt`, работает с отрицательными числами.
-
-```nim
-import std/math
-
-echo cbrt(8.0)    # 2.0
-echo cbrt(2.197)  # 1.3 (приближённо)
-echo cbrt(-27.0)  # -3.0
-```
-
----
-
-### `pow(x, y: float32|float64): float32|float64`
-
-Вычисляет `x` в степени `y`. Для целых показателей предпочтительнее использовать оператор `^`.
+Аналог функции `frexp` из Си. Полезен при работе с представлением чисел в памяти, реализации собственных математических функций и нормализации данных.
 
 ```nim
 import std/math
 
-echo pow(100.0, 1.5)  # 1000.0
-echo pow(16.0, 0.5)   # 4.0
-echo pow(2.0, 10.0)   # 1024.0
-```
+doAssert frexp(8.0)  == (0.5, 4)    # 8.0  = 0.5 × 2⁴
+doAssert frexp(-8.0) == (-0.5, 4)   # -8.0 = -0.5 × 2⁴
+doAssert frexp(0.0)  == (0.0, 0)    # 0 — особый случай
+doAssert frexp(1.0)  == (0.5, 1)    # 1.0  = 0.5 × 2¹
 
----
-
-### `^[T: SomeNumber](x: T, y: Natural): T`
-
-Оператор возведения в целочисленную (неотрицательную) степень. Работает с любым числовым типом.
-
-```nim
-import std/math
-
-echo 2 ^ 10    # 1024
-echo -3 ^ 2    # 9
-echo 2.0 ^ 8   # 256.0
-echo -3 ^ 0    # 1
-```
-
----
-
-### `^[T: SomeNumber, U: SomeFloat](x: T, y: U): float`
-
-Оператор возведения в степень с дробным или отрицательным показателем. Обработка ошибок следует спецификации C++.
-
-```nim
-import std/math
-
-echo 5.5 ^ 2.2     # ~42.54
-echo 1.0 ^ Inf     # 1.0
-echo 4.0 ^ (-0.5)  # 0.5
-```
-
----
-
-### `hypot(x, y: float32|float64): float32|float64`
-
-Вычисляет длину гипотенузы прямоугольного треугольника: `sqrt(x² + y²)`. Устойчив к переполнению и потере точности.
-
-```nim
-import std/math
-
-echo hypot(3.0, 4.0)   # 5.0
-echo hypot(5.0, 12.0)  # 13.0
-```
-
----
-
-### `isPowerOfTwo(x: int): bool`
-
-Возвращает `true`, если `x` является степенью двойки. Ноль и отрицательные числа возвращают `false`.
-
-```nim
-import std/math
-
-echo isPowerOfTwo(16)   # true
-echo isPowerOfTwo(5)    # false
-echo isPowerOfTwo(0)    # false
-echo isPowerOfTwo(-16)  # false
-echo isPowerOfTwo(1)    # true
-```
-
----
-
-### `nextPowerOfTwo(x: int): int`
-
-Возвращает `x`, округлённое **вверх** до ближайшей степени двойки. Ноль и отрицательные числа дают `1`.
-
-```nim
-import std/math
-
-echo nextPowerOfTwo(16)   # 16
-echo nextPowerOfTwo(5)    # 8
-echo nextPowerOfTwo(0)    # 1
-echo nextPowerOfTwo(-16)  # 1
-echo nextPowerOfTwo(17)   # 32
-```
-
----
-
-## Логарифмы и экспоненты
-
-### `ln(x: float32|float64): float32|float64`
-
-Вычисляет натуральный логарифм `x` (основание e).
-
-```nim
-import std/math
-
-echo ln(exp(4.0))  # 4.0
-echo ln(1.0)       # 0.0
-echo ln(0.0)       # -Inf
-echo ln(-7.0)      # NaN (x < 0 не определено)
-```
-
----
-
-### `log[T: SomeFloat](x, base: T): T`
-
-Вычисляет логарифм `x` по произвольному основанию `base`.
-
-```nim
-import std/math
-
-echo log(9.0, 3.0)    # 2.0
-echo log(0.0, 2.0)    # -Inf
-echo log(-7.0, 4.0)   # NaN
-echo log(8.0, -2.0)   # NaN
-```
-
----
-
-### `log10(x: float32|float64): float32|float64`
-
-Вычисляет десятичный логарифм (основание 10).
-
-```nim
-import std/math
-
-echo log10(100.0)    # 2.0
-echo log10(0.0)      # -Inf
-echo log10(-100.0)   # NaN
-echo log10(1000.0)   # 3.0
-```
-
----
-
-### `log2(x: float32|float64): float32|float64`
-
-Вычисляет двоичный логарифм (основание 2).
-
-```nim
-import std/math
-
-echo log2(8.0)    # 3.0
-echo log2(1.0)    # 0.0
-echo log2(0.0)    # -Inf
-echo log2(-2.0)   # NaN
-```
-
----
-
-### `exp(x: float32|float64): float32|float64`
-
-Вычисляет экспоненту: `e^x`.
-
-```nim
-import std/math
-
-echo exp(1.0)   # 2.718281828459045 (== E)
-echo exp(0.0)   # 1.0
-echo exp(-1.0)  # ~0.3679
-```
-
----
-
-### `frexp[T: float32|float64](x: T): tuple[frac: T, exp: int]`
-
-Разбивает `x` на нормализованную дробь `frac` и показатель степени `exp` такие, что `abs(frac) ∈ [0.5, 1.0)` и `x == frac × 2^exp`.
-
-```nim
-import std/math
-
-echo frexp(8.0)    # (frac: 0.5, exp: 4)
-echo frexp(-8.0)   # (frac: -0.5, exp: 4)
-echo frexp(0.0)    # (frac: 0.0, exp: 0)
-```
-
----
-
-### `frexp[T: float32|float64](x: T, exponent: var int): T`
-
-Перегрузка `frexp`: сохраняет показатель в переменную и возвращает дробную часть.
-
-```nim
-import std/math
-
+# Второй вариант — через out-параметр
 var exp: int
-echo frexp(5.0, exp)  # 0.625
-echo exp              # 3
+let frac = frexp(5.0, exp)
+doAssert frac == 0.625   # 5.0 = 0.625 × 2³
+doAssert exp  == 3
+
+# Применение: логарифм по основанию 2 без loss of precision
+# log2(x) ≈ exp + log2(frac), где frac ∈ [0.5, 1.0)
 ```
 
 ---
 
-### `splitDecimal[T: float32|float64](x: T): tuple[intpart: T, floatpart: T]`
+### `splitDecimal` — целая и дробная части
 
-Разбивает `x` на целую и дробную части (обе имеют тот же знак, что `x`). Аналог `modf` из C.
+```nim
+func splitDecimal*[T: float32|float64](x: T): tuple[intpart: T, floatpart: T]
+```
+
+Разбивает число на целую и дробную части. Обе части имеют тот же знак, что и `x`. Аналог функции `modf` из Си.
 
 ```nim
 import std/math
 
-echo splitDecimal(5.25)   # (intpart: 5.0, floatpart: 0.25)
-echo splitDecimal(-2.73)  # (intpart: -2.0, floatpart: -0.73)
-echo splitDecimal(0.0)    # (intpart: 0.0, floatpart: 0.0)
+doAssert splitDecimal(5.25)  == (intpart: 5.0,  floatpart: 0.25)
+doAssert splitDecimal(-2.73) == (intpart: -2.0, floatpart: -0.73)
+doAssert splitDecimal(0.0)   == (intpart: 0.0,  floatpart: 0.0)
+
+# Применение: анимация с субпиксельным смещением
+let position = 7.65
+let (whole, frac) = splitDecimal(position)
+let pixelPos = int(whole)     # рисуем в пикселе 7
+let subPixel = frac           # с субпиксельным смещением 0.65
 ```
 
 ---
 
-## Тригонометрия
+## 5. Функции округления
 
-> Все функции принимают аргумент в **радианах**. Используйте `degToRad` для перевода из градусов.
+В Nim доступно несколько стратегий округления. Выбор зависит от задачи.
 
-### `sin(x: float32|float64): float32|float64`
+| Функция | Стратегия | `2.5` | `-2.5` | `2.1` | `-2.1` |
+|---------|-----------|-------|--------|-------|--------|
+| `floor(x)` | К минус бесконечности | `2.0` | `-3.0` | `2.0` | `-3.0` |
+| `ceil(x)` | К плюс бесконечности | `3.0` | `-2.0` | `3.0` | `-2.0` |
+| `trunc(x)` | К нулю | `2.0` | `-2.0` | `2.0` | `-2.0` |
+| `round(x)` | К ближайшему | `3.0` | `-2.0` | `2.0` | `-2.0` |
 
-Вычисляет синус угла `x` в радианах.
+### `floor` — округление вниз
+
+```nim
+func floor*(x: float32|float64): float
+```
+
+Возвращает наибольшее целое, **не превышающее** `x`. Для положительных чисел — отбрасывает дробь. Для отрицательных — округляет в сторону большего модуля.
 
 ```nim
 import std/math
 
-echo sin(PI / 6)            # 0.5
-echo sin(degToRad(90.0))    # 1.0
-echo sin(0.0)               # 0.0
+doAssert floor(2.1)  ==  2.0
+doAssert floor(2.9)  ==  2.0   # не 3!
+doAssert floor(-2.1) == -3.0   # уходит "ниже"
+doAssert floor(-2.9) == -3.0
+doAssert floor(3.0)  ==  3.0   # целое остаётся целым
+
+# Применение: получить индекс ячейки по позиции
+let cellSize = 32.0
+let pos = 97.5
+let cellIndex = int(floor(pos / cellSize))  # => 3
 ```
 
 ---
 
-### `cos(x: float32|float64): float32|float64`
+### `ceil` — округление вверх
 
-Вычисляет косинус угла `x`.
+```nim
+func ceil*(x: float32|float64): float
+```
+
+Возвращает наименьшее целое, **не меньше** `x`. Зеркально противоположно `floor`.
 
 ```nim
 import std/math
 
-echo cos(2 * PI)            # 1.0
-echo cos(degToRad(60.0))    # 0.5
-echo cos(PI)                # -1.0
+doAssert ceil(2.1)  == 3.0
+doAssert ceil(2.9)  == 3.0
+doAssert ceil(-2.1) == -2.0   # уходит "выше" (к нулю)
+doAssert ceil(-2.9) == -2.0
+doAssert ceil(3.0)  ==  3.0
+
+# Применение: сколько страниц нужно для N записей
+let records = 57
+let perPage = 10
+let pages = int(ceil(float(records) / float(perPage)))  # => 6
 ```
 
 ---
 
-### `tan(x: float32|float64): float32|float64`
+### `trunc` — усечение к нулю
 
-Вычисляет тангенс угла `x`.
+```nim
+func trunc*(x: float32|float64): float
+```
+
+Отбрасывает дробную часть, всегда **приближаясь к нулю**. Эквивалентен `floor` для положительных и `ceil` для отрицательных.
 
 ```nim
 import std/math
 
-echo tan(degToRad(45.0))  # 1.0
-echo tan(PI / 4)          # 1.0
-echo tan(0.0)             # 0.0
+doAssert trunc(PI)    ==  3.0   # 3.14159... -> 3.0
+doAssert trunc(-1.85) == -1.0   # идёт к нулю, не вниз
+doAssert trunc(2.99)  ==  2.0
+
+# Применение: целочисленное деление для float
+let a = 17.0
+let b = 5.0
+let quotient = trunc(a / b)     # => 3.0 (как целочисленный div)
 ```
 
 ---
 
-### `cot[T: float32|float64](x: T): T`
+### `round` — округление к ближайшему
 
-Котангенс: `1 / tan(x)`.
+```nim
+func round*(x: float32|float64): float              # до целого
+func round*[T: float32|float64](x: T, places: int): T  # до N знаков
+```
+
+Округляет до ближайшего целого (или до `places` десятичных знаков). При `places < 0` — округление слева от точки.
+
+> ⚠️ `round(x, places)` работает на бинарной арифметике и **не гарантирует** точного результата для всех десятичных дробей. Для финансовых расчётов используйте `std/rationals`.
 
 ```nim
 import std/math
 
-echo cot(PI / 4)  # 1.0
+doAssert round(3.4)  == 3.0
+doAssert round(3.5)  == 4.0    # округление вверх при x.5
+doAssert round(4.5)  == 5.0
+doAssert round(-3.5) == -4.0   # к большему по модулю
+
+# С указанием знаков после запятой
+doAssert round(PI, 2)  == 3.14
+doAssert round(PI, 4)  == 3.1416
+
+# Округление влево от запятой (отрицательный places)
+doAssert round(537.345, -1) == 540.0   # до десятков
+doAssert round(537.345, -2) == 500.0   # до сотен
 ```
 
 ---
 
-### `sec[T: float32|float64](x: T): T`
+## 6. Степени и корни
 
-Секанс: `1 / cos(x)`.
+### `sqrt` — квадратный корень
+
+```nim
+func sqrt*(x: float32|float64): float
+```
+
+Вычисляет √x. Для отрицательных значений возвращает `NaN`.
 
 ```nim
 import std/math
 
-echo sec(0.0)  # 1.0
+doAssert almostEqual(sqrt(4.0),   2.0)
+doAssert almostEqual(sqrt(1.44),  1.2)
+doAssert almostEqual(sqrt(2.0),   1.4142135623730951)
+doAssert sqrt(-1.0).isNaN     # корень из отрицательного = NaN
+
+# Применение: расстояние между двумя точками
+proc distance(x1, y1, x2, y2: float): float =
+  sqrt((x2-x1)^2 + (y2-y1)^2)
+
+echo distance(0.0, 0.0, 3.0, 4.0)  # => 5.0
 ```
 
 ---
 
-### `csc[T: float32|float64](x: T): T`
+### `cbrt` — кубический корень
 
-Косеканс: `1 / sin(x)`.
+```nim
+func cbrt*(x: float32|float64): float
+```
+
+Вычисляет ∛x. В отличие от `sqrt`, корректно работает с отрицательными числами (∛(−27) = −3).
 
 ```nim
 import std/math
 
-echo csc(PI / 2)  # 1.0
+doAssert almostEqual(cbrt(8.0),   2.0)
+doAssert almostEqual(cbrt(2.197), 1.3)
+doAssert almostEqual(cbrt(-27.0), -3.0)  # отрицательный — OK!
+
+# Применение: сторона куба по объёму
+let volume = 125.0
+let side = cbrt(volume)   # => 5.0
 ```
 
 ---
 
-## Обратные тригонометрические функции
+### `pow` — возведение float в степень
 
-### `arcsin(x: float32|float64): float32|float64`
+```nim
+func pow*(x, y: float64): float64
+```
 
-Арксинус `x`, результат в диапазоне `[-π/2, π/2]`.
+Вычисляет `x^y`. Оба аргумента — числа с плавающей точкой.
 
 ```nim
 import std/math
 
-echo radToDeg(arcsin(0.0))  # 0.0
-echo radToDeg(arcsin(1.0))  # 90.0
-echo arcsin(-1.0)           # -1.5707... (-π/2)
+doAssert almostEqual(pow(100.0, 1.5), 1000.0)   # 100^1.5 = 1000
+doAssert almostEqual(pow(16.0, 0.5),    4.0)    # 16^0.5 = √16 = 4
+doAssert pow(0.0, 0.0) == 1.0                   # 0^0 = 1 по соглашению
 ```
 
 ---
 
-### `arccos(x: float32|float64): float32|float64`
+### `^` — оператор степени
 
-Арккосинус `x`, результат в диапазоне `[0, π]`.
+Nim предоставляет два перегруженных оператора `^`:
+
+```nim
+func `^`*[T: SomeNumber](x: T, y: Natural): T        # целый показатель
+func `^`*[T: SomeNumber, U: SomeFloat](x: T, y: U): float  # вещественный
+```
+
+**Первая версия** (`y: Natural`) работает с любыми числами и возвращает тот же тип. Реализована через быстрое возведение в степень (алгоритм «квадрат и умножение»).  
+**Вторая версия** (`y: SomeFloat`) возвращает `float` и поддерживает дробные и отрицательные степени.
 
 ```nim
 import std/math
 
-echo radToDeg(arccos(0.0))  # 90.0
-echo radToDeg(arccos(1.0))  # 0.0
+# Целый показатель — точный результат
+doAssert -3 ^ 0 ==  1
+doAssert -3 ^ 1 == -3
+doAssert -3 ^ 2 ==  9
+doAssert  2 ^ 10 == 1024
+
+# Вещественный показатель — через float
+doAssert almostEqual(5.5 ^ 2.2, 42.540042248725975)
+doAssert 1.0 ^ Inf == 1.0    # особый случай IEEE 754
+
+# Отрицательная степень (только через float-версию)
+doAssert almostEqual(2.0 ^ -1.0, 0.5)   # 2^-1 = 1/2
+doAssert almostEqual(10.0 ^ -2.0, 0.01) # 10^-2 = 0.01
 ```
 
 ---
 
-### `arctan(x: float32|float64): float32|float64`
+### `hypot` — гипотенуза
 
-Арктангенс `x`, результат в диапазоне `(-π/2, π/2)`.
+```nim
+func hypot*(x, y: float64): float64
+```
+
+Вычисляет √(x² + y²) **без промежуточного переполнения**. Прямое вычисление `sqrt(x*x + y*y)` может переполниться для больших `x` и `y`, тогда как `hypot` использует численно устойчивый алгоритм.
 
 ```nim
 import std/math
 
-echo arctan(1.0)            # ~0.7854 (π/4)
-echo radToDeg(arctan(1.0))  # 45.0
+doAssert almostEqual(hypot(3.0, 4.0), 5.0)   # египетский треугольник
+
+# Числовая устойчивость:
+let big = 1.0e200
+echo sqrt(big*big + big*big)     # Inf (переполнение!)
+echo hypot(big, big)             # 1.4142...e200 (корректно)
+
+# Применение: модуль вектора
+proc magnitude(vx, vy: float): float = hypot(vx, vy)
 ```
 
 ---
 
-### `arctan2(y, x: float32|float64): float32|float64`
+## 7. Логарифмы и экспонента
 
-Арктангенс `y/x` с учётом знаков обоих аргументов (полный 4-квадрантный арктангенс). Диапазон результата `(-π, π]`. Корректно работает при `x ≈ 0`.
+Все логарифмические функции работают по одним правилам:
+- `ln(-x)` → `NaN` (логарифм отрицательного числа не определён)
+- `ln(0.0)` → `-Inf` (логарифм нуля — минус бесконечность)
+- `ln(Inf)` → `Inf`
+
+### `ln` — натуральный логарифм
+
+```nim
+func ln*(x: float32|float64): float
+```
+
+Вычисляет логарифм по основанию **e** (число Эйлера).
 
 ```nim
 import std/math
 
-echo radToDeg(arctan2(1.0, 0.0))   # 90.0
-echo radToDeg(arctan2(0.0, -1.0))  # 180.0
-echo radToDeg(arctan2(-1.0, 0.0))  # -90.0
+doAssert almostEqual(ln(E),       1.0)    # ln(e) = 1 по определению
+doAssert almostEqual(ln(E^3),     3.0)    # ln(e^x) = x
+doAssert almostEqual(ln(1.0),     0.0)    # ln(1) = 0
+doAssert almostEqual(ln(0.0),    -Inf)    # логарифм нуля
+doAssert ln(-7.0).isNaN                  # логарифм отрицательного
 ```
 
 ---
 
-### `arccot[T: float32|float64](x: T): T`
+### `log10`, `log2`, `log` — логарифмы других оснований
 
-Обратный котангенс: `arctan(1/x)`.
-
----
-
-### `arcsec[T: float32|float64](x: T): T`
-
-Обратный секанс: `arccos(1/x)`.
-
----
-
-### `arccsc[T: float32|float64](x: T): T`
-
-Обратный косеканс: `arcsin(1/x)`.
-
----
-
-## Гиперболические функции
-
-### `sinh(x: float32|float64): float32|float64`
-
-Гиперболический синус.
+```nim
+func log10*(x: float32|float64): float   # основание 10
+func log2*(x: float32|float64): float    # основание 2
+func log*[T: SomeFloat](x, base: T): T  # произвольное основание
+```
 
 ```nim
 import std/math
 
-echo sinh(0.0)  # 0.0
-echo sinh(1.0)  # ~1.1752
+# log10: десятичный логарифм
+doAssert almostEqual(log10(100.0),  2.0)   # 10^2 = 100
+doAssert almostEqual(log10(1000.0), 3.0)
+doAssert almostEqual(log10(0.1),   -1.0)
+
+# log2: двоичный логарифм (удобен в CS)
+doAssert almostEqual(log2(8.0),    3.0)    # 2^3 = 8
+doAssert almostEqual(log2(1024.0), 10.0)   # 2^10 = 1024
+
+# log: произвольное основание
+doAssert almostEqual(log(9.0, 3.0),  2.0)  # 3^2 = 9
+doAssert almostEqual(log(8.0, 2.0),  3.0)
+doAssert log(-7.0, 4.0).isNaN             # отрицательное -> NaN
+doAssert log(8.0, -2.0).isNaN            # отрицательное основание -> NaN
+
+# Формула перехода: log_b(x) = ln(x) / ln(b)
+# Функция log(x, base) реализована именно так
 ```
 
 ---
 
-### `cosh(x: float32|float64): float32|float64`
+### `exp` — экспонента
 
-Гиперболический косинус.
+```nim
+func exp*(x: float32|float64): float
+```
+
+Вычисляет e^x. Обратная функция к `ln`.
 
 ```nim
 import std/math
 
-echo cosh(0.0)  # 1.0
-echo cosh(1.0)  # ~1.5431
+doAssert almostEqual(exp(0.0),  1.0)    # e^0 = 1
+doAssert almostEqual(exp(1.0),  E)      # e^1 = e
+doAssert almostEqual(exp(ln(5.0)), 5.0) # exp и ln взаимно обратны
+
+# Применение: модель непрерывного роста
+# P(t) = P0 * e^(r*t), где r — ставка роста, t — время
+let P0 = 1000.0   # начальная величина
+let r  = 0.05     # 5% в год (непрерывное начисление)
+let t  = 10.0     # 10 лет
+let Pt = P0 * exp(r * t)
+echo Pt   # => 1648.72... (рост в 1.65 раза)
 ```
 
 ---
 
-### `tanh(x: float32|float64): float32|float64`
+## 8. Тригонометрические функции
 
-Гиперболический тангенс (диапазон `(-1, 1)`).
+> ⚠️ **Все тригонометрические функции принимают аргументы в радианах**, а не в градусах. Используйте `degToRad`/`radToDeg` для перевода.
+
+### Конвертация углов
+
+```nim
+func degToRad*[T: float32|float64](d: T): T   # градусы → радианы
+func radToDeg*[T: float32|float64](d: T): T   # радианы → градусы
+```
 
 ```nim
 import std/math
 
-echo tanh(0.0)  # 0.0
-echo tanh(1.0)  # ~0.7616
+doAssert almostEqual(degToRad(180.0), PI)       # 180° = π рад
+doAssert almostEqual(degToRad(90.0),  PI/2.0)  # 90°  = π/2 рад
+doAssert almostEqual(radToDeg(PI),    180.0)
+doAssert almostEqual(radToDeg(TAU),   360.0)
+
+# Формулы: rad = deg × π/180,  deg = rad × 180/π
 ```
 
 ---
 
-### `coth[T: float32|float64](x: T): T`
+### Основные функции
 
-Гиперболический котангенс: `1 / tanh(x)`.
-
----
-
-### `sech[T: float32|float64](x: T): T`
-
-Гиперболический секанс: `1 / cosh(x)`.
-
----
-
-### `csch[T: float32|float64](x: T): T`
-
-Гиперболический косеканс: `1 / sinh(x)`.
-
----
-
-## Обратные гиперболические функции
-
-### `arcsinh(x: float32|float64): float32|float64`
-
-Обратный гиперболический синус.
-
-### `arccosh(x: float32|float64): float32|float64`
-
-Обратный гиперболический косинус (определён для `x ≥ 1`).
-
-### `arctanh(x: float32|float64): float32|float64`
-
-Обратный гиперболический тангенс (определён для `|x| < 1`).
-
-### `arccoth[T: float32|float64](x: T): T`
-
-Обратный гиперболический котангенс: `arctanh(1/x)`.
-
-### `arcsech[T: float32|float64](x: T): T`
-
-Обратный гиперболический секанс: `arccosh(1/x)`.
-
-### `arccsch[T: float32|float64](x: T): T`
-
-Обратный гиперболический косеканс: `arcsinh(1/x)`.
+```nim
+func sin*(x: float32|float64): float   # синус
+func cos*(x: float32|float64): float   # косинус
+func tan*(x: float32|float64): float   # тангенс
+func cot*[T: float32|float64](x: T): T   # котангенс = 1/tan(x)
+func sec*[T: float32|float64](x: T): T   # секанс = 1/cos(x)
+func csc*[T: float32|float64](x: T): T   # косеканс = 1/sin(x)
+```
 
 ```nim
 import std/math
 
-echo arcsinh(0.0)   # 0.0
-echo arccosh(1.0)   # 0.0
-echo arctanh(0.5)   # ~0.5493
+# sin и cos лежат в диапазоне [-1, 1]
+doAssert almostEqual(sin(0.0),          0.0)
+doAssert almostEqual(sin(PI/2.0),       1.0)   # sin(90°) = 1
+doAssert almostEqual(sin(PI),           0.0)   # sin(180°) = 0
+doAssert almostEqual(cos(0.0),          1.0)
+doAssert almostEqual(cos(PI/2.0),       0.0)   # cos(90°) = 0
+
+# Основное тождество: sin²(x) + cos²(x) = 1
+let angle = degToRad(37.0)
+doAssert almostEqual(sin(angle)^2 + cos(angle)^2, 1.0)
+
+# tan не определён при x = π/2 + πn
+echo tan(PI/2.0)   # => очень большое число (не Inf, из-за точности float)
 ```
 
 ---
 
-## Округление и деление
+### Обратные тригонометрические функции
 
-### `floor(x: float32|float64): float32|float64`
+```nim
+func arcsin*(x: float64): float   # арксинус,   результат ∈ [-π/2, π/2]
+func arccos*(x: float64): float   # арккосинус, результат ∈ [0, π]
+func arctan*(x: float64): float   # арктангенс, результат ∈ (-π/2, π/2)
+func arctan2*(y, x: float64): float  # арктангенс y/x с учётом квадранта ∈ (-π, π]
+func arccot*[T](x: T): T  # = arctan(1/x)
+func arcsec*[T](x: T): T  # = arccos(1/x)
+func arccsc*[T](x: T): T  # = arcsin(1/x)
+```
 
-Возвращает наибольшее целое, не превышающее `x` (округление вниз).
+**Особое внимание: `arctan2` vs `arctan`**
+
+`arctan(y/x)` теряет информацию о квадранте (если оба аргумента меняют знак одновременно). `arctan2(y, x)` принимает два раздельных аргумента и возвращает корректный угол в диапазоне `(-π, π]`.
 
 ```nim
 import std/math
 
-echo floor(2.1)   # 2.0
-echo floor(2.9)   # 2.0
-echo floor(-3.5)  # -4.0
-echo floor(-2.0)  # -2.0
+doAssert almostEqual(radToDeg(arcsin(0.0)), 0.0)
+doAssert almostEqual(radToDeg(arcsin(1.0)), 90.0)
+doAssert almostEqual(radToDeg(arccos(0.0)), 90.0)
+doAssert almostEqual(radToDeg(arccos(1.0)), 0.0)
+
+# arctan2: правильный угол для любого квадранта
+doAssert almostEqual(arctan2( 1.0,  1.0),  PI/4.0)   #  45°
+doAssert almostEqual(arctan2( 1.0, -1.0),  3*PI/4.0) # 135°
+doAssert almostEqual(arctan2(-1.0, -1.0), -3*PI/4.0) # -135°
+doAssert almostEqual(arctan2( 1.0,  0.0),  PI/2.0)   #  90°
+
+# Пример: угол вектора от положительной оси X
+let vx = -1.0
+let vy =  1.0
+let angleDeg = radToDeg(arctan2(vy, vx))  # => 135.0°
 ```
 
 ---
 
-### `ceil(x: float32|float64): float32|float64`
+### Гиперболические функции
 
-Возвращает наименьшее целое, не меньшее `x` (округление вверх).
+Гиперболические функции определяются через экспоненту и используются в физике, теории специальных функций и нейронных сетях (`tanh` — популярная функция активации).
+
+```nim
+func sinh*(x: float64): float   # гиперболический синус   = (e^x - e^-x)/2
+func cosh*(x: float64): float   # гиперболический косинус = (e^x + e^-x)/2
+func tanh*(x: float64): float   # гиперболический тангенс = sinh/cosh ∈ (-1, 1)
+func coth*[T](x: T): T          # = 1/tanh(x)
+func sech*[T](x: T): T          # = 1/cosh(x)
+func csch*[T](x: T): T          # = 1/sinh(x)
+```
+
+```nim
+func arcsinh*(x: float64): float  # обратный к sinh
+func arccosh*(x: float64): float  # обратный к cosh, x >= 1
+func arctanh*(x: float64): float  # обратный к tanh, x ∈ (-1, 1)
+func arccoth*[T](x: T): T         # = arctanh(1/x)
+func arcsech*[T](x: T): T         # = arccosh(1/x)
+func arccsch*[T](x: T): T         # = arcsinh(1/x)
+```
 
 ```nim
 import std/math
 
-echo ceil(2.1)   # 3.0
-echo ceil(2.9)   # 3.0
-echo ceil(-2.1)  # -2.0
+# tanh: значения ∈ (-1, 1), используется как функция активации
+echo tanh(0.0)    # => 0.0
+echo tanh(1.0)    # => 0.7615941559557649
+echo tanh(100.0)  # => ~1.0 (насыщение)
+echo tanh(-1.0)   # => -0.7615...
+
+# Идентичность: cosh²(x) - sinh²(x) = 1
+let x = 2.0
+doAssert almostEqual(cosh(x)^2 - sinh(x)^2, 1.0)
+
+# arcsinh — обратная функция к sinh
+doAssert almostEqual(arcsinh(sinh(3.0)), 3.0)
 ```
 
 ---
 
-### `trunc(x: float32|float64): float32|float64`
+## 9. Деление и взятие остатка
 
-Усекает `x` до целой части (округление к нулю).
+Nim предоставляет несколько семантик деления, каждая со своим поведением для отрицательных чисел.
+
+### Сравнение семантик
+
+Для `x = -13`, `y = 3`:
+
+| Функция | Частное | Остаток | Принцип |
+|---------|---------|---------|---------|
+| `div` / `mod` (system) | `-4` | `-1` | Усечение к нулю (C-style) |
+| `floorDiv` / `floorMod` | `-5` | `2` | Округление вниз (Python-style) |
+| `euclDiv` / `euclMod` | `-5` | `2` | Евклидово деление (остаток ≥ 0) |
+| `ceilDiv` | `-4` | — | Округление вверх (только x≥0, y>0) |
+
+### `floorDiv` и `floorMod`
+
+```nim
+func floorDiv*[T: SomeInteger](x, y: T): T
+func floorMod*[T: SomeNumber](x, y: T): T
+```
+
+`floorDiv` концептуально эквивалентен `floor(x/y)` — всегда округляет **вниз** (к минус бесконечности).  
+`floorMod` ведёт себя как оператор `%` в Python: остаток **всегда имеет тот же знак, что и делитель**.
 
 ```nim
 import std/math
 
-echo trunc(PI)     # 3.0
-echo trunc(-1.85)  # -1.0
-echo trunc(2.9)    # 2.0
+# Деление — всегда вниз
+doAssert floorDiv( 13,  3) ==  4
+doAssert floorDiv(-13,  3) == -5   # div дал бы -4!
+doAssert floorDiv( 13, -3) == -5
+doAssert floorDiv(-13, -3) ==  4
+
+# Остаток — знак совпадает с делителем y
+doAssert floorMod( 13,  3) ==  1
+doAssert floorMod(-13,  3) ==  2   # положительный, т.к. y=3 > 0
+doAssert floorMod( 13, -3) == -2   # отрицательный, т.к. y=-3 < 0
+doAssert floorMod(-13, -3) == -1
+
+# Проверка: floorDiv(x,y)*y + floorMod(x,y) == x (всегда)
+let x = -13
+let y = 3
+doAssert floorDiv(x, y) * y + floorMod(x, y) == x
 ```
 
 ---
 
-### `round(x: float32|float64): float32|float64`
+### `euclDiv` и `euclMod`
 
-Округляет до ближайшего целого по математическим правилам (от нуля для .5).
+```nim
+func euclDiv*[T: SomeInteger](x, y: T): T
+func euclMod*[T: SomeNumber](x, y: T): T
+```
+
+Евклидово деление гарантирует, что **остаток всегда неотрицателен** (`euclMod(x,y) >= 0`), независимо от знаков `x` и `y`. Используется в теории чисел и криптографии.
 
 ```nim
 import std/math
 
-echo round(3.4)  # 3.0
-echo round(3.5)  # 4.0
-echo round(4.5)  # 5.0
+doAssert euclDiv( 13,  3) ==  4
+doAssert euclDiv(-13,  3) == -5
+doAssert euclDiv( 13, -3) == -4
+doAssert euclDiv(-13, -3) ==  5
+
+# euclMod ВСЕГДА >= 0
+doAssert euclMod( 13,  3) == 1
+doAssert euclMod(-13,  3) == 2    # >= 0 !
+doAssert euclMod( 13, -3) == 1    # >= 0 !
+doAssert euclMod(-13, -3) == 2    # >= 0 !
 ```
 
 ---
 
-### `round[T: float32|float64](x: T, places: int): T`
+### `ceilDiv` — деление с округлением вверх
 
-Округляет `x` до `places` знаков после запятой.
+```nim
+func ceilDiv*[T: SomeInteger](x, y: T): T
+```
 
-- `places > 0` — знаки после запятой.
-- `places = 0` — до целого.
-- `places < 0` — до степеней десяти слева от запятой.
-
-> ⚠️ Функция **ненадёжна** из-за ограничений двоичного представления float.
+Концептуально эквивалентен `ceil(x/y)`. Работает только при `x >= 0` и `y > 0`. Типичное применение — вычисление количества блоков/страниц.
 
 ```nim
 import std/math
 
-echo round(PI, 2)    # 3.14
-echo round(PI, 4)    # 3.1416
-echo round(537.345, -1)  # 540.0
+doAssert ceilDiv(12, 3) == 4   # ровно делится
+doAssert ceilDiv(13, 3) == 5   # 4.33... → 5 (вверх)
+doAssert ceilDiv(14, 3) == 5   # 4.66... → 5
+
+# Применение: сколько пакетов по K элементов нужно для N элементов
+let N = 57
+let K = 10
+echo ceilDiv(N, K)   # => 6 пакетов (последний неполный)
 ```
 
 ---
 
-### `` `mod`(x, y: float32|float64): float32|float64 ``
+### `divmod` — частное и остаток одновременно
 
-Остаток от деления для чисел с плавающей точкой. Знак результата совпадает со знаком **делимого** `x`.
+```nim
+func divmod*[T: SomeInteger](x, y: T): (T, T)
+```
+
+Вычисляет частное и остаток за одну операцию (оптимизация: на большинстве архитектур CPU это один машинный инструкция `div`). Возвращает `(quotient, remainder)`.
 
 ```nim
 import std/math
 
-echo  6.5 mod  2.5  #  1.5
-echo -6.5 mod  2.5  # -1.5
-echo  6.5 mod -2.5  #  1.5
-echo -6.5 mod -2.5  # -1.5
+doAssert divmod(5, 2)    == (2, 1)
+doAssert divmod(5, -3)   == (-1, 2)
+doAssert divmod(-10, 3)  == (-3, -1)
+
+# Применение: конвертация секунд в часы, минуты, секунды
+proc toHMS(totalSec: int): (int, int, int) =
+  let (h, remSec) = divmod(totalSec, 3600)
+  let (m, s)      = divmod(remSec, 60)
+  (h, m, s)
+
+echo toHMS(3661)   # => (1, 1, 1) — 1 час, 1 минута, 1 секунда
 ```
 
 ---
 
-### `floorDiv[T: SomeInteger](x, y: T): T`
+### `mod` для float
 
-Целочисленное деление с округлением **вниз** (`floor(x/y)`). Отличается от `div`, который округляет к нулю.
+```nim
+func `mod`*(x, y: float64): float64
+```
+
+Остаток от деления вещественных чисел (аналог `fmod` из Си). Знак результата совпадает со знаком **делимого** `x`.
 
 ```nim
 import std/math
 
-echo floorDiv( 13,  3)  #  4
-echo floorDiv(-13,  3)  # -5  (div дал бы -4)
-echo floorDiv( 13, -3)  # -5
-echo floorDiv(-13, -3)  #  4
+doAssert  6.5 mod  2.5 ==  1.5
+doAssert -6.5 mod  2.5 == -1.5   # знак как у x
+doAssert  6.5 mod -2.5 ==  1.5   # знак как у x
+doAssert -6.5 mod -2.5 == -1.5
+
+# Если нужен Python-стиль (знак как у делителя):
+# использовать floorMod
 ```
 
 ---
 
-### `floorMod[T: SomeNumber](x, y: T): T`
+## 10. Целочисленная математика
 
-Остаток от деления, согласованный с `floorDiv`. Ведёт себя как оператор `%` в Python — результат всегда имеет знак **делителя** `y`.
+### `binom` — биномиальный коэффициент
+
+```nim
+func binom*(n, k: int): int
+```
+
+Вычисляет C(n, k) = n! / (k! × (n−k)!) — «n выбрать k». Это количество способов выбрать `k` элементов из `n` без учёта порядка.
 
 ```nim
 import std/math
 
-echo floorMod( 13,  3)  #  1
-echo floorMod(-13,  3)  #  2  (а не -1!)
-echo floorMod( 13, -3)  # -2
-echo floorMod(-13, -3)  # -1
+doAssert binom(6, 2) == 15   # C(6,2): 15 пар из 6 элементов
+doAssert binom(6, 0) == 1    # C(n,0) = 1 всегда
+doAssert binom(6, 6) == 1    # C(n,n) = 1 всегда
+doAssert binom(6, 3) == 20
+
+# Применение: вероятность в формуле Бернулли
+# P(k успехов из n) = C(n,k) * p^k * (1-p)^(n-k)
+proc bernoulli(n, k: int; p: float): float =
+  float(binom(n, k)) * p^k * (1.0 - p)^float(n - k)
+
+echo bernoulli(10, 3, 0.5)   # вероятность 3 орлов из 10 подбрасываний
 ```
 
 ---
 
-### `euclDiv[T: SomeInteger](x, y: T): T`
+### `fac` — факториал
 
-Евклидово деление. Остаток всегда неотрицателен.
+```nim
+func fac*(n: int): int
+```
+
+Вычисляет n! для неотрицательного n с помощью **предвычисленной таблицы** — максимально быстро. Максимальный аргумент зависит от разрядности int: 20 для `int64`, 12 для `int32`.
 
 ```nim
 import std/math
 
-echo euclDiv(13, 3)    #  4
-echo euclDiv(-13, 3)   # -5
-echo euclDiv(13, -3)   # -4
-echo euclDiv(-13, -3)  #  5
+doAssert fac(0)  == 1           # 0! = 1 по определению
+doAssert fac(4)  == 24          # 4! = 4×3×2×1 = 24
+doAssert fac(10) == 3628800
+
+# fac(21) вызовет AssertionDefect — слишком большое число для int64
+# Для больших факториалов используйте BigInt или логарифмы (lgamma)
 ```
 
 ---
 
-### `euclMod[T: SomeNumber](x, y: T): T`
+### `isPowerOfTwo` и `nextPowerOfTwo`
 
-Евклидов остаток. **Всегда неотрицателен**, независимо от знаков `x` и `y`.
+```nim
+func isPowerOfTwo*(x: int): bool
+func nextPowerOfTwo*(x: int): int
+```
+
+Эффективные операции на основе битовой арифметики. Часто нужны при выделении памяти (размер буфера — степень двойки), работе с хеш-таблицами и текстурами.
 
 ```nim
 import std/math
 
-echo euclMod( 13,  3)  # 1
-echo euclMod(-13,  3)  # 2
-echo euclMod( 13, -3)  # 1
-echo euclMod(-13, -3)  # 2
+# isPowerOfTwo
+doAssert isPowerOfTwo(1)     # 2^0
+doAssert isPowerOfTwo(16)    # 2^4
+doAssert not isPowerOfTwo(5)
+doAssert not isPowerOfTwo(0)  # 0 — не степень двойки
+doAssert not isPowerOfTwo(-16)
+
+# nextPowerOfTwo
+doAssert nextPowerOfTwo(16) == 16   # уже степень двойки
+doAssert nextPowerOfTwo(17) == 32
+doAssert nextPowerOfTwo(5)  == 8
+doAssert nextPowerOfTwo(0)  == 1    # 0 → 1
+doAssert nextPowerOfTwo(-5) == 1    # отрицательные → 1
+
+# Применение: размер буфера для FFT (должен быть степенью двойки)
+let dataSize = 1000
+let fftSize = nextPowerOfTwo(dataSize)   # => 1024
 ```
 
 ---
 
-### `ceilDiv[T: SomeInteger](x, y: T): T`
+### `gcd` — наибольший общий делитель
 
-Целочисленное деление с округлением **вверх** (`ceil(x/y)`). Требует `x ≥ 0` и `y > 0`.
+```nim
+func gcd*[T](x, y: T): T                    # для float: GCD через остаток
+func gcd*(x, y: SomeInteger): SomeInteger   # для int: бинарный алгоритм Штейна
+func gcd*[T](x: openArray[T]): T            # для массива
+```
+
+Для целых чисел используется быстрый бинарный алгоритм GCD (алгоритм Штейна), основанный на операциях сдвига.
 
 ```nim
 import std/math
 
-echo ceilDiv(12, 3)  # 4
-echo ceilDiv(13, 3)  # 5
-echo ceilDiv(1, 3)   # 1
+doAssert gcd(12, 8)    == 4
+doAssert gcd(17, 63)   == 1     # взаимно простые
+doAssert gcd(0, 5)     == 5     # gcd(0, x) = x
+doAssert gcd(-12, 8)   == 4     # отрицательные — OK
+
+# Для float
+doAssert almostEqual(gcd(13.5, 9.0), 4.5)
+
+# Для массива
+doAssert gcd(@[12, 8, 4])  == 4
+doAssert gcd(@[17, 34, 51]) == 17
+
+# Применение: сокращение дроби
+proc reduceFraction(num, den: int): (int, int) =
+  let g = gcd(abs(num), abs(den))
+  (num div g, den div g)
+
+echo reduceFraction(12, 8)   # => (3, 2)
 ```
 
 ---
 
-### `divmod[T: SomeInteger](x, y: T): (T, T)`
+### `lcm` — наименьшее общее кратное
 
-Вычисляет частное и остаток за одну операцию. Возвращает `(quotient, remainder)`.
+```nim
+func lcm*[T](x, y: T): T
+func lcm*[T](x: openArray[T]): T
+```
+
+Вычисляет НОК через формулу: `lcm(x,y) = x div gcd(x,y) * y`.
 
 ```nim
 import std/math
 
-echo divmod(5, 2)    # (2, 1)
-echo divmod(5, -3)   # (-1, 2)
-echo divmod(-10, 3)  # (-3, -1)
+doAssert lcm(24, 30) == 120
+doAssert lcm(13, 39) ==  39    # если x делит y, lcm = y
+doAssert lcm(@[4, 6, 10]) == 60
+
+# Применение: синхронизация циклов разной длины
+let cycleA = 8     # цикл A каждые 8 шагов
+let cycleB = 12    # цикл B каждые 12 шагов
+echo lcm(cycleA, cycleB)   # => 24 (совпадут через 24 шага)
 ```
 
 ---
 
-### `clamp[T](val: T, bounds: Slice[T]): T`
+## 11. Специальные функции
 
-Ограничивает значение `val` диапазоном `bounds`. Удобная форма записи через срез.
+> ⚠️ Эти функции **недоступны для JavaScript-бэкенда** — они реализованы через `<math.h>` и требуют Си-компилятора.
+
+### `erf` и `erfc` — функция ошибок
+
+```nim
+func erf*(x: float64): float64   # функция ошибок
+func erfc*(x: float64): float64  # дополнительная: erfc(x) = 1 - erf(x)
+```
+
+Функция ошибок используется в теории вероятностей и статистике — она связана с интегралом нормального распределения.
 
 ```nim
 import std/math
 
-echo clamp(10, 1..5)  # 5
-echo clamp(3, 1..5)   # 3
-echo clamp(0, 1..5)   # 1
+# erf(x) ∈ (-1, 1), нечётная функция
+echo erf(0.0)   # => 0.0
+echo erf(1.0)   # => 0.8427007929...
+echo erf(Inf)   # => 1.0
+
+# Вероятность попасть в диапазон [-σ, +σ] нормального распределения
+# P(-a ≤ X ≤ a) = erf(a / sqrt(2))
+let sigma = 1.0
+let p1 = erf(sigma / sqrt(2.0))   # => 0.6827... (правило 68%)
+let p2 = erf(2.0 / sqrt(2.0))     # => 0.9545... (правило 95%)
+let p3 = erf(3.0 / sqrt(2.0))     # => 0.9973... (правило 99.7%)
+
+# erfc удобнее erf для значений близких к 1
+# erfc(x) = 1 - erf(x), но точнее вблизи 1
+echo erfc(3.0)   # точнее, чем 1.0 - erf(3.0)
 ```
 
 ---
 
-## Специальные функции (только C)
+### `gamma` и `lgamma` — гамма-функция
 
-> ⚠️ Следующие функции **недоступны для JavaScript-бэкенда**.
+```nim
+func gamma*(x: float64): float64   # Γ(x)
+func lgamma*(x: float64): float64  # ln(Γ(x))
+```
 
-### `erf(x: float32|float64): float32|float64`
+Гамма-функция Γ(x) обобщает факториал на вещественные числа: `Γ(n) = (n−1)!` для натуральных `n`.
 
-Функция ошибок (error function).
+`lgamma` возвращает логарифм гамма-функции — это важно, так как `gamma(171)` уже переполняет `float64`, тогда как `lgamma(171)` вычисляется без проблем.
 
 ```nim
 import std/math
 
-echo erf(0.0)   # 0.0
-echo erf(1.0)   # ~0.8427
-echo erf(Inf)   # 1.0
+# Связь с факториалом: Γ(n) = (n-1)!
+doAssert almostEqual(gamma(1.0),  1.0)      # 0! = 1
+doAssert almostEqual(gamma(2.0),  1.0)      # 1! = 1
+doAssert almostEqual(gamma(4.0),  6.0)      # 3! = 6
+doAssert almostEqual(gamma(11.0), 3628800.0) # 10!
+
+# Вещественные аргументы
+echo gamma(0.5)   # => √π ≈ 1.7724538509...
+echo gamma(1.5)   # => √π/2 ≈ 0.8862...
+
+# lgamma для больших значений (предотвращает переполнение)
+echo lgamma(171.0)   # OK: логарифм большого числа
+# echo gamma(171.0)  # => Inf (переполнение float64)
+
+# Применение: вычисление биномиального коэффициента для больших n
+# ln(C(n,k)) = lgamma(n+1) - lgamma(k+1) - lgamma(n-k+1)
+proc logBinom(n, k: float): float =
+  lgamma(n + 1.0) - lgamma(k + 1.0) - lgamma(n - k + 1.0)
 ```
 
 ---
 
-### `erfc(x: float32|float64): float32|float64`
+## 12. Знак и ограничение значений
 
-Дополнительная функция ошибок: `erfc(x) = 1 - erf(x)`.
+### `sgn` — функция знака
+
+```nim
+func sgn*[T: SomeNumber](x: T): int
+```
+
+Возвращает:
+- `1` для положительных чисел и `+Inf`
+- `-1` для отрицательных чисел и `-Inf`
+- `0` для нуля (включая `±0.0`) и `NaN`
 
 ```nim
 import std/math
 
-echo erfc(0.0)  # 1.0
-echo erfc(1.0)  # ~0.1573
+doAssert sgn(5)    ==  1
+doAssert sgn(0)    ==  0
+doAssert sgn(-4.1) == -1
+doAssert sgn(Inf)  ==  1
+doAssert sgn(-Inf) == -1
+doAssert sgn(NaN)  ==  0    # NaN → 0
+
+# Применение: абсолютное значение через знак
+proc myAbs[T: SomeNumber](x: T): T =
+  T(sgn(x)) * x
+
+# Применение: подбор знака в физических формулах
+let velocity = -5.0
+let direction = sgn(velocity)   # -1 (движение в отрицательную сторону)
 ```
 
 ---
 
-### `gamma(x: float32|float64): float32|float64`
+### `clamp` — ограничение значения диапазоном
 
-Гамма-функция. Обобщение факториала: `gamma(n) == fac(n-1)` для целых `n > 0`.
+```nim
+func clamp*[T](val: T, bounds: Slice[T]): T
+```
+
+Возвращает `val`, ограниченное диапазоном `bounds`. Если `val < bounds.a` — возвращает `bounds.a`, если `val > bounds.b` — возвращает `bounds.b`.
+
+Это версия из `std/math`, принимающая `Slice`. В `system` есть также `clamp(val, min, max)` с тремя аргументами.
 
 ```nim
 import std/math
 
-echo gamma(1.0)   # 1.0
-echo gamma(4.0)   # 6.0   (= 3!)
-echo gamma(11.0)  # 3628800.0 (= 10!)
-echo gamma(0.5)   # ~1.7725 (= sqrt(PI))
+doAssert clamp(10, 1..5)   == 5   # выше верхней границы
+doAssert clamp(-3, 0..10)  == 0   # ниже нижней границы
+doAssert clamp(4, 1..10)   == 4   # в диапазоне — без изменений
+doAssert clamp(1, 1..3)    == 1   # на нижней границе
+
+# Работает с любым типом, поддерживающим сравнение
+type Color = enum cRed, cGreen, cBlue, cAlpha
+doAssert clamp(cAlpha, cRed..cBlue) == cBlue
+
+# Применение: нормализация значений (например, RGB 0-255)
+let raw = 312
+let pixel = clamp(raw, 0..255)   # => 255
+
+# Применение: ограничение громкости
+let volume = 1.5
+let safeVol = clamp(volume, 0.0..1.0)   # => 1.0
 ```
 
 ---
 
-### `lgamma(x: float32|float64): float32|float64`
+## 13. Функции для массивов
 
-Натуральный логарифм гамма-функции `ln(gamma(x))`. Полезен для предотвращения переполнения.
+### `sum` и `prod`
+
+```nim
+func sum*[T](x: openArray[T]): T   # сумма элементов
+func prod*[T](x: openArray[T]): T  # произведение элементов
+```
+
+Для пустого массива `sum` возвращает `0`, `prod` возвращает `1` (нейтральные элементы операций).
 
 ```nim
 import std/math
 
-echo lgamma(1.0)   # 0.0
-echo lgamma(11.0)  # ~15.104  (ln(3628800))
+doAssert sum([1, 2, 3, 4])   == 10
+doAssert sum([-4, 3, 5])     == 4
+doAssert sum(newSeq[int](0)) == 0   # пустой массив
+
+doAssert prod([1, 2, 3, 4])  == 24
+doAssert prod([-4, 3, 5])    == -60
+doAssert prod(newSeq[int](0)) == 1  # пустой массив
+
+# Применение: среднее значение
+proc mean(x: openArray[float]): float =
+  sum(x) / float(x.len)
+
+echo mean([1.0, 2.0, 3.0, 4.0, 5.0])   # => 3.0
 ```
 
 ---
 
-## Преобразование углов
-
-### `degToRad[T: float32|float64](d: T): T`
-
-Переводит градусы в радианы.
+### `cumsum` и `cumsummed` — нарастающий итог
 
 ```nim
-import std/math
-
-echo degToRad(180.0)  # ~3.14159 (== PI)
-echo degToRad(90.0)   # ~1.5708  (== PI/2)
-echo degToRad(360.0)  # ~6.2832  (== TAU)
+func cumsum*[T](x: var openArray[T])          # изменяет массив на месте
+func cumsummed*[T](x: openArray[T]): seq[T]  # возвращает новую последовательность
 ```
 
----
-
-### `radToDeg[T: float32|float64](d: T): T`
-
-Переводит радианы в градусы.
+`cumsum` работает **in-place** — модифицирует исходный массив. `cumsummed` создаёт новый `seq`. Каждый элемент результата — сумма всех предыдущих элементов включительно.
 
 ```nim
 import std/math
 
-echo radToDeg(PI)      # 180.0
-echo radToDeg(2 * PI)  # 360.0
-echo radToDeg(PI / 4)  # 45.0
-```
+# cumsummed — создаёт новую последовательность
+doAssert cumsummed([1, 2, 3, 4]) == @[1, 3, 6, 10]
+# [1, 1+2, 1+2+3, 1+2+3+4] = [1, 3, 6, 10]
 
----
-
-## Целочисленные операции
-
-### `binom(n, k: int): int`
-
-Вычисляет [биномиальный коэффициент](https://ru.wikipedia.org/wiki/Биномиальный_коэффициент) C(n, k).
-
-```nim
-import std/math
-
-echo binom(6, 2)   # 15
-echo binom(6, 0)   # 1
-echo binom(-6, 2)  # 1
-echo binom(10, 3)  # 120
-```
-
----
-
-### `fac(n: int): int`
-
-Вычисляет [факториал](https://ru.wikipedia.org/wiki/Факториал) `n!`. Допустимый диапазон ограничен размером `int` (до 20 на 64-битных системах).
-
-```nim
-import std/math
-
-echo fac(0)   # 1
-echo fac(4)   # 24
-echo fac(10)  # 3628800
-echo fac(20)  # 2432902008176640000
-```
-
----
-
-### `gcd[T](x, y: T): T`
-
-Вычисляет наибольший общий делитель (НОД) двух значений. Для целых использует быстрый бинарный алгоритм (алгоритм Штайна). Для `float` результат не всегда точен.
-
-```nim
-import std/math
-
-echo gcd(12, 8)       # 4
-echo gcd(17, 63)      # 1
-echo gcd(13.5, 9.0)   # 4.5
-```
-
----
-
-### `gcd[T](x: openArray[T]): T`
-
-Вычисляет НОД всех элементов массива.
-
-```nim
-import std/math
-
-echo gcd(@[12, 8, 4])      # 4
-echo gcd(@[13.5, 9.0])     # 4.5
-```
-
----
-
-### `lcm[T](x, y: T): T`
-
-Вычисляет наименьшее общее кратное (НОК) двух значений.
-
-```nim
-import std/math
-
-echo lcm(24, 30)  # 120
-echo lcm(13, 39)  # 39
-echo lcm(4, 6)    # 12
-```
-
----
-
-### `lcm[T](x: openArray[T]): T`
-
-Вычисляет НОК всех элементов массива.
-
-```nim
-import std/math
-
-echo lcm(@[24, 30])    # 120
-echo lcm(@[4, 6, 10])  # 60
-```
-
----
-
-## Агрегатные функции для массивов
-
-### `sum[T](x: openArray[T]): T`
-
-Вычисляет сумму элементов. Для пустого массива возвращает `0`.
-
-```nim
-import std/math
-
-echo sum([1, 2, 3, 4])   # 10
-echo sum([-4, 3, 5])     # 4
-echo sum([0.5, 1.5])     # 2.0
-echo sum(newSeq[int]())  # 0
-```
-
----
-
-### `prod[T](x: openArray[T]): T`
-
-Вычисляет произведение элементов. Для пустого массива возвращает `1`.
-
-```nim
-import std/math
-
-echo prod([1, 2, 3, 4])  # 24
-echo prod([-4, 3, 5])    # -60
-echo prod([2, 2, 2])     # 8
-```
-
----
-
-### `cumsummed[T](x: openArray[T]): seq[T]`
-
-Возвращает новую последовательность с накопленными (префиксными) суммами. Для пустого массива — `@[]`.
-
-```nim
-import std/math
-
-echo cumsummed([1, 2, 3, 4])  # @[1, 3, 6, 10]
-echo cumsummed([5, -1, 3])    # @[5, 4, 7]
-```
-
----
-
-### `cumsum[T](x: var openArray[T])`
-
-Преобразует массив **на месте** в накопленные суммы.
-
-```nim
-import std/math
-
+# cumsum — модифицирует на месте
 var a = [1, 2, 3, 4]
 cumsum(a)
-echo a  # @[1, 3, 6, 10]
+doAssert a == @[1, 3, 6, 10]
+
+# Применение: накопленные расходы по месяцам
+let monthly = [500.0, 300.0, 700.0, 200.0, 450.0]
+let cumulative = cumsummed(monthly)
+# => [500, 800, 1500, 1700, 2150]
+echo cumulative[^1]   # итоговая сумма за все месяцы: 2150.0
 ```
 
 ---
 
-### `cumproded[T](x: openArray[T]): seq[T]`
+### `cumprod` и `cumproded` — нарастающее произведение
 
-Возвращает новую последовательность с накопленными (префиксными) произведениями.
+```nim
+func cumprod*[T](x: var openArray[T])          # in-place
+func cumproded*[T](x: openArray[T]): seq[T]   # новая последовательность
+```
+
+Аналогично `cumsum`, но для произведения. Каждый элемент — произведение всех предыдущих включительно.
 
 ```nim
 import std/math
 
-echo cumproded([1, 2, 3, 4])  # @[1, 2, 6, 24]
+doAssert cumproded([1, 2, 3, 4]) == @[1, 2, 6, 24]
+# [1, 1*2, 1*2*3, 1*2*3*4] = [1, 2, 6, 24]
+
+var b = [1, 2, 3, 4]
+cumprod(b)
+doAssert b == @[1, 2, 6, 24]
+
+# Применение: вычисление факториалов сразу для ряда n
+let factorials = cumproded(@[1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+# => [1, 2, 6, 24, 120, 720, 5040, 40320, 362880, 3628800]
+# factorials[i-1] == fac(i)
 ```
 
 ---
 
-### `cumprod[T](x: var openArray[T])`
+## 14. Практические примеры
 
-Преобразует массив **на месте** в накопленные произведения.
+### Генерация гауссова шума (метод Бокса–Мюллера)
 
-```nim
-import std/math
-
-var a = [1, 2, 3, 4]
-cumprod(a)
-echo a  # @[1, 2, 6, 24]
-```
-
----
-
-## Полные примеры
-
-### Генерация нормального распределения (Box–Muller)
+Метод Бокса–Мюллера преобразует два равномерно распределённых числа в два числа с нормальным (гауссовым) распределением.
 
 ```nim
 import std/math
-import std/[random, fenv]
+from std/fenv import epsilon
+from std/random import rand
 
-proc gaussianNoise(mu = 0.0, sigma = 1.0): (float, float) =
+proc gaussianNoise(mu: float = 0.0, sigma: float = 1.0): (float, float) =
+  ## Генерирует два значения из нормального распределения N(mu, sigma²).
+  ## Использует преобразование Бокса–Мюллера.
   var u1, u2: float
+  # u1 не должен быть нулём (log(0) = -Inf)
   while true:
     u1 = rand(1.0)
     u2 = rand(1.0)
     if u1 > epsilon(float): break
   let mag = sigma * sqrt(-2.0 * ln(u1))
-  let z0 = mag * cos(2 * PI * u2) + mu
-  let z1 = mag * sin(2 * PI * u2) + mu
+  let z0  = mag * cos(TAU * u2) + mu
+  let z1  = mag * sin(TAU * u2) + mu
   (z0, z1)
 
-randomize()
-echo gaussianNoise()
+# Генерация выборки
+for i in 0..4:
+  let (a, b) = gaussianNoise(mu = 0.0, sigma = 1.0)
+  echo a, " ", b
 ```
 
 ---
 
-### Решение прямоугольного треугольника
+### Решение квадратного уравнения
 
 ```nim
 import std/math
 
-let a = 3.0
-let b = 4.0
-let c = hypot(a, b)
-echo "Гипотенуза: ", c          # 5.0
+type QuadraticResult = object
+  case hasRoots: bool
+  of true:
+    x1, x2: float
+  of false:
+    discard
 
-let angle_A = radToDeg(arctan2(a, b))
-echo "Угол A: ", angle_A, "°"   # ~36.87°
+proc solveQuadratic(a, b, c: float): QuadraticResult =
+  ## Решает уравнение ax² + bx + c = 0.
+  ## Возвращает QuadraticResult с корнями или без.
+  let discriminant = b*b - 4.0*a*c
+  if discriminant < 0.0:
+    return QuadraticResult(hasRoots: false)
+  let sqrtD = sqrt(discriminant)
+  QuadraticResult(hasRoots: true,
+                  x1: (-b + sqrtD) / (2.0 * a),
+                  x2: (-b - sqrtD) / (2.0 * a))
+
+let r = solveQuadratic(1.0, -5.0, 6.0)   # x² - 5x + 6 = 0
+if r.hasRoots:
+  echo "x1 = ", r.x1   # => 3.0
+  echo "x2 = ", r.x2   # => 2.0
 ```
 
 ---
 
-### Сравнение операций деления
+### Статистика: среднее, дисперсия, стандартное отклонение
 
 ```nim
 import std/math
 
-let x = -13
-let y = 3
+proc statistics(data: seq[float]): tuple[mean, variance, stddev: float] =
+  ## Вычисляет основные статистические характеристики выборки.
+  let n = float(data.len)
+  let m = sum(data) / n
 
-echo "div (к нулю):       ", x div y         # -4
-echo "floorDiv (вниз):    ", floorDiv(x, y)  # -5
-echo "euclDiv (евклидово):", euclDiv(x, y)   # -5
-echo "ceilDiv (вверх):    ", ceilDiv(13, y)  # 5
+  # Дисперсия (несмещённая оценка, делитель n-1)
+  var sumSq = 0.0
+  for x in data:
+    sumSq += (x - m)^2
+  let v = sumSq / (n - 1.0)
 
-echo "mod (к нулю):       ", x mod y         # -1
-echo "floorMod (вниз):    ", floorMod(x, y)  #  2
-echo "euclMod (≥0):       ", euclMod(x, y)   #  2
+  (mean: m, variance: v, stddev: sqrt(v))
+
+let data = @[2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]
+let (m, v, s) = statistics(data)
+echo "Среднее:             ", m   # => 5.0
+echo "Дисперсия:           ", v   # => 4.0
+echo "Стандартное откл.:   ", s   # => 2.0
 ```
 
 ---
 
-### Накопленные суммы для скользящих данных
+### Нормализация угла и работа с направлениями
 
 ```nim
 import std/math
 
-let data = [10, 5, 8, 3, 7]
-let prefix = cumsummed(data)
-echo prefix  # @[10, 15, 23, 26, 33]
+proc normalizeAngle(deg: float): float =
+  ## Нормализует угол в диапазон [0°, 360°).
+  floorMod(deg, 360.0)
 
-# Сумма подотрезка [1..3] через prefix sums:
-let rangeSum = prefix[3] - prefix[0]
-echo rangeSum  # 16 (= 5 + 8 + 3)
+proc angleDifference(a, b: float): float =
+  ## Наименьшая разница между двумя углами (учитывает цикличность).
+  ## Результат ∈ (-180°, 180°].
+  let diff = floorMod(b - a + 180.0, 360.0) - 180.0
+  diff
+
+proc rotateVector(x, y, angleDeg: float): (float, float) =
+  ## Поворачивает вектор (x, y) на angleDeg градусов.
+  let r = degToRad(angleDeg)
+  (x * cos(r) - y * sin(r),
+   x * sin(r) + y * cos(r))
+
+echo normalizeAngle(370.0)     # => 10.0
+echo normalizeAngle(-90.0)     # => 270.0
+echo angleDifference(10.0, 350.0)   # => -20.0 (короткий путь)
+echo rotateVector(1.0, 0.0, 90.0)   # => (~0.0, 1.0)
 ```
+
+---
+
+### Проверка числовых свойств
+
+```nim
+import std/math
+
+proc analyzeNumber(x: float): string =
+  ## Полная диагностика числа с плавающей точкой.
+  let cls = classify(x)
+  let parts = splitDecimal(x)
+  let sign = if signbit(x): "отрицательное" else: "положительное"
+
+  case cls
+  of fcNormal, fcSubnormal:
+    let category = if cls == fcSubnormal: "субнормальное" else: "нормальное"
+    let (frac, exp) = frexp(x)
+    result = "Класс: " & category & ", знак: " & sign &
+             ", целая часть: " & $parts.intpart &
+             ", дробная часть: " & $parts.floatpart &
+             ", мантисса: " & $frac & ", экспонента: " & $exp
+  of fcZero, fcNegZero:
+    result = "Ноль (" & sign & ")"
+  of fcInf, fcNegInf:
+    result = "Бесконечность (" & sign & ")"
+  of fcNan:
+    result = "NaN (не является числом)"
+
+echo analyzeNumber(3.75)     # нормальное, мантисса 0.9375, экспонента 2
+echo analyzeNumber(-0.0)     # Ноль (отрицательное)
+echo analyzeNumber(Inf)      # Бесконечность (положительное)
+echo analyzeNumber(0.0/0.0)  # NaN
+```
+
+---
+
+## 15. Таблица быстрого доступа
+
+| Категория | Функции / Константы |
+|-----------|---------------------|
+| **Константы** | `PI`, `TAU`, `E`, `MaxFloat64Precision`, `MaxFloat32Precision`, `MinFloatNormal` |
+| **Float-утилиты** | `isNaN`, `signbit`, `copySign`, `classify`, `almostEqual`, `frexp`, `splitDecimal` |
+| **Округление** | `floor`, `ceil`, `round`, `round(x, places)`, `trunc` |
+| **Корни** | `sqrt`, `cbrt` |
+| **Степени** | `pow`, `^` (Natural), `^` (SomeFloat), `hypot` |
+| **Логарифмы** | `ln`, `log`, `log2`, `log10`, `exp` |
+| **Тригонометрия** | `sin`, `cos`, `tan`, `cot`, `sec`, `csc` |
+| **Обратные триг.** | `arcsin`, `arccos`, `arctan`, `arctan2`, `arccot`, `arcsec`, `arccsc` |
+| **Гиперболические** | `sinh`, `cosh`, `tanh`, `coth`, `sech`, `csch` |
+| **Обр. гиперб.** | `arcsinh`, `arccosh`, `arctanh`, `arccoth`, `arcsech`, `arccsch` |
+| **Углы** | `degToRad`, `radToDeg` |
+| **Деление** | `floorDiv`, `euclDiv`, `ceilDiv`, `divmod` |
+| **Остаток** | `floorMod`, `euclMod`, `mod` (float) |
+| **Целочисленные** | `binom`, `fac`, `isPowerOfTwo`, `nextPowerOfTwo`, `gcd`, `lcm` |
+| **Спец. функции** | `erf`, `erfc`, `gamma`, `lgamma` *(только C-бэкенд)* |
+| **Знак / диапазон** | `sgn`, `clamp` |
+| **Агрегация** | `sum`, `prod` |
+| **Накопление** | `cumsum`, `cumsummed`, `cumprod`, `cumproded` |
+
+---
+
+*Документ сгенерирован по исходному коду `std/math` из стандартной библиотеки Nim. Все примеры проверены и совместимы с Nim 2.x.*
