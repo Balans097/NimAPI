@@ -1,194 +1,297 @@
-# Nim `std/parseopt` Module Reference
+# `std/parseopt` Module Reference — Nim Standard Library
 
-> The standard Nim command line parser. Implements parsing of command line arguments into three kinds of tokens: short options, long options, and plain arguments. Conforms to conventional Unix CLI conventions.
-
----
+Standard command-line argument parser for Nim.
 
 ## Table of Contents
-
-1. [Concepts and Supported Syntax](#concepts-and-supported-syntax)
-2. [Types](#types)
-   - [CmdLineKind](#cmdlinekind)
-   - [OptParser](#optparser)
-3. [initOptParser (string)](#initoptparser-string)
-4. [initOptParser (seq\[string\])](#initoptparser-seqstring)
-5. [next](#next)
-6. [cmdLineRest](#cmdlinerest)
-7. [remainingArgs](#remainingargs)
-8. [getopt (iterator over OptParser)](#getopt-iterator-over-optparser)
-9. [getopt (standalone iterator)](#getopt-standalone-iterator)
-10. [shortNoVal and longNoVal explained](#shortnoval-and-longnoval-explained)
-11. [Complete practical example](#complete-practical-example)
-12. [Quick Cheat-Sheet](#quick-cheat-sheet)
+- [Module Overview](#1-module-overview)
+- [Supported Syntax](#2-supported-syntax)
+- [Types and Enums](#3-types-and-enums)
+- [Initialization: `initOptParser`](#4-initialization-initoptparser)
+- [Iterator `getopt`](#5-iterator-getopt)
+- [Manual Traversal: `next`](#6-manual-traversal-next)
+- [Parameters `shortNoVal` and `longNoVal`](#7-parameters-shortnoval-and-longnoval)
+- [Parser Modes (`CliMode`)](#8-parser-modes-climode)
+- [Getting Remaining Arguments: `cmdLineRest` and `remainingArgs`](#9-getting-remaining-arguments-cmdlinerest-and-remainingargs)
+- [Deprecated API](#10-deprecated-api)
+- [Practical Examples](#11-practical-examples)
+- [Quick Reference Table](#12-quick-reference-table)
 
 ---
 
-## Concepts and Supported Syntax
+## 1. Module Overview
 
-Before diving into the API, it is worth understanding what the parser recognises as valid input.
+The `std/parseopt` module implements a full-featured command-line argument parser. It supports short and long options, option arguments, short flag bundling, and several compatibility modes.
 
-### Token kinds
-
-Every element on the command line is classified as one of three things:
-
-| Kind | Example input | Meaning |
-|---|---|---|
-| Short option | `-v`, `-e:5`, `-e=5`, `-abc` | A single-letter flag, optionally with a value |
-| Long option | `--verbose`, `--output:file`, `--output=file` | A word-length flag, optionally with a value |
-| Argument | `file.txt`, `src/` | Anything that does not begin with `-` |
-
-### Short option clusters
-
-Multiple short options can be clustered into a single token: `-abc` is equivalent to `-a -b -c`. Only the last letter in a cluster can carry a value; `-e:5` sets option `e` to `5`.
-
-### The `--` separator
-
-The bare `--` token is parsed as a long option whose **name is the empty string** (`key == ""`). By convention this signals "everything that follows is a plain argument, not an option". The parser itself does **not** enforce this convention automatically — you must check for it in your own code and call `remainingArgs` (or `cmdLineRest`) to collect the rest.
-
-### Value separators
-
-Values can be attached to options using either `:` or `=`:
-- `--output:file.txt`
-- `--output=file.txt`
-- `-o:file.txt`
-- `-o=file.txt`
-
-If the value itself begins with `:` or `=`, double it or alternate the separators:
-- `--delim::` → value is `:`
-- `--delim=:` → value is `:`
-
----
-
-## Types
-
-### `CmdLineKind`
-
-```nim
-type CmdLineKind* = enum
-  cmdEnd,         ## No more tokens; end of command line
-  cmdArgument,    ## A plain argument (e.g. a filename)
-  cmdLongOption,  ## A long option (--foo)
-  cmdShortOption  ## A short option (-f)
-```
-
-**What it is:** An enumeration that describes the type of the current token. After each call to `next`, the parser's `kind` field is set to one of these four values.
-
-`cmdEnd` is the sentinel — when you see it, stop processing. The three active values map directly to the three syntactic forms described above.
-
+### Importing
 ```nim
 import std/parseopt
+```
 
-var p = initOptParser("--verbose -n 42 report.txt")
-p.next()
-assert p.kind == cmdLongOption   # --verbose
-p.next()
-assert p.kind == cmdShortOption  # -n
-p.next()
-assert p.kind == cmdShortOption  # 42 is treated as value of -n... see below
+### Related Modules
+
+| Module | Purpose |
+|--------|---------|
+| `std/os` | Low-level access to arguments (`paramCount`, `paramStr`) |
+| `std/parseutils` | Utilities for parsing tokens, numbers, identifiers |
+| `std/strutils` | String operations (useful for processing option values) |
+| `std/parsecfg` | Configuration file parser |
+
+---
+
+## 2. Supported Syntax
+
+### Basic Formats
+
+| Format | Type | Description |
+|--------|------|-------------|
+| `-a` | Short option without value | Flag |
+| `-a:5` | Short option with value (via `:`) | Option with explicit delimiter |
+| `-a=5` | Short option with value (via `=`) | Option with explicit delimiter |
+| `-cde` | Bundled short options | Three flags `c`, `d`, `e` in one argument |
+| `-fgh=5` | Bundled options with value on last | Flags `f`, `g`, then `h=5` |
+| `--foo` | Long option without value | Flag |
+| `--foo:bar` | Long option with value | Via `:` delimiter |
+| `--foo=bar` | Long option with value | Via `=` delimiter |
+| `file.txt` | Argument | Anything not starting with `-` |
+
+### Special Cases
+
+Values starting with a delimiter are valid:
+```
+--foo::     → option foo, value ":"
+--foo=:     → option foo, value ":"
+--foo:=     → option foo, value "="
+--foo==     → option foo, value "="
+```
+
+The `--` delimiter is a special long option with an empty name (`key == ""`). Traditionally means "all following tokens are arguments". The parser does not handle `--` automatically — the programmer must catch this case and call `remainingArgs`.
+
+Whitespace around delimiters (in `NimMode` and `LaxMode`):
+```
+--foo: bar   → option foo, value "bar"  (space after : is allowed)
+--foo =bar   → option foo, value "bar"  (space before = is allowed)
 ```
 
 ---
 
-### `OptParser`
+## 3. Types and Enums
 
+### `CmdLineKind` — Type of Recognized Token
 ```nim
-type OptParser* = object of RootObj
-  kind*: CmdLineKind  # Kind of the most recently parsed token
-  key*:  string       # Option name or argument text
-  val*:  string       # Option value, or "" if none was given
-  # (internal fields are not exported)
+type
+  CmdLineKind* = enum
+    cmdEnd,          ## End of argument stream
+    cmdArgument,     ## Argument (not an option), e.g., filename
+    cmdLongOption,   ## Long option: --foo
+    cmdShortOption   ## Short option: -f
 ```
 
-**What it is:** The parser's state object. It holds everything needed to walk through the command line token by token. You never construct it with `OptParser(...)` directly — always use `initOptParser`.
+This enum is stored in the `kind` field of the `OptParser` object and returned by the `getopt` iterator.
 
-The three exported fields you read after each `next()` call:
+| Value | When it occurs | Contents of `key` | Contents of `val` |
+|-------|---------------|-------------------|-------------------|
+| `cmdEnd` | Tokens exhausted | `" "` | `" "` |
+| `cmdArgument` | Token without `-` | The argument itself | `" "` |
+| `cmdLongOption` | Token `--foo` | `"foo"` | Value or `" "` |
+| `cmdShortOption` | Token `-f` | `"f"` | Value or `" "` |
 
-- `kind` — what kind of token was just parsed
-- `key` — the option name (for options) or the raw text (for arguments)
-- `val` — the value string if the option had one; `""` otherwise
+Special case for `--`: `kind = cmdLongOption`, `key = ""`, `val = ""`.
 
+### `CliMode` — Parser Behavior Mode
 ```nim
-import std/parseopt
-
-var p = initOptParser("--output=report.pdf -v input.md")
-p.next()
-echo p.kind  # cmdLongOption
-echo p.key   # "output"
-echo p.val   # "report.pdf"
+type
+  CliMode* = enum
+    LaxMode,  ## Most flexible mode (POSIX-like)
+    NimMode,  ## Standard Nim mode (default)
+    GnuMode   ## GNU-compatible mode
 ```
+
+Detailed mode descriptions are in [Section 8](#8-parser-modes-climode).
+
+### `OptParser` — Parser Object
+```nim
+type
+  OptParser* = object of RootObj
+    kind*: CmdLineKind  ## Type of last recognized token
+    key*:  string       ## Option name or argument text
+    val*:  string       ## Option value (empty if not specified)
+    # ... internal fields (pos, idx, cmds, rules, etc.)
+```
+
+Fields `kind`, `key`, and `val` are the only public fields of the object. The rest are implementation details and not directly accessible.
+
+After each call to `next` or each iteration of `getopt`, these fields are updated.
 
 ---
 
-## `initOptParser` (string)
+## 4. Initialization: `initOptParser`
 
+There are two public overloads: one accepting a string, and one accepting `seq[string]`.
+
+### From String
 ```nim
-proc initOptParser*(cmdline = "",
-                    shortNoVal: set[char] = {},
+proc initOptParser*(cmdline = "";
+                    shortNoVal: set[char] = {};
                     longNoVal: seq[string] = @[];
-                    allowWhitespaceAfterColon = true): OptParser
+                    mode: CliMode = NimMode): OptParser
 ```
 
-**What it does:** Creates and returns a new `OptParser` from a **single string** that is first split into tokens (the same way a shell would split a command line). If `cmdline` is the empty string `""`, the parser reads the actual process command line via the `os` module instead. Raises `ValueError` if the platform cannot provide the real command line.
-
-The optional parameters are explained in detail in the [shortNoVal and longNoVal](#shortnoval-and-longnoval-explained) section.
-
-`allowWhitespaceAfterColon` controls whether `--key: value` (space between `:` and the value) is accepted. It defaults to `true`.
-
-**When to use it:** When you have a command line as a single string — for example, in tests, or when reading a command from a config file — and want to parse it the same way as real `argv`.
+The `cmdline` string is split into tokens according to shell quoting rules (respecting quotes). If `cmdline` is empty, real process arguments are read via `os.paramStr`.
 
 ```nim
 import std/parseopt
 
-# Parse a literal string (typical in tests)
-var p = initOptParser("--left --debug:3 -l -r:2")
+# From string (convenient for tests)
+var p1 = initOptParser("--left --debug:3 -l -r:2")
 
-# Parse the actual process arguments (production code)
-var q = initOptParser()
+# From string with flags that take no values specified
+var p2 = initOptParser("--left -lr",
+                        shortNoVal = {'l', 'r'},
+                        longNoVal = @["left"])
 
-# Parse with NoVal hints
-var r = initOptParser("--verbose -j4",
-                      shortNoVal = {'v'},
-                      longNoVal  = @["verbose"])
+# From real command line
+var p3 = initOptParser()
+
+# With GNU mode
+var p4 = initOptParser("--foo=bar -c val", mode = GnuMode)
 ```
 
----
-
-## `initOptParser` (seq[string])
-
+### From `seq[string]`
 ```nim
-proc initOptParser*(cmdline: seq[string],
-                    shortNoVal: set[char] = {},
+proc initOptParser*(cmdline: seq[string];
+                    shortNoVal: set[char] = {};
                     longNoVal: seq[string] = @[];
-                    allowWhitespaceAfterColon = true): OptParser
+                    mode: CliMode = NimMode): OptParser
 ```
 
-**What it does:** Same purpose as the string overload, but accepts a **sequence of strings** where each element is already a separate token. This is the more natural form when working with `os.commandLineParams()` (which returns a `seq[string]`) because no shell-splitting step is needed. If `cmdline` is empty (`@[]`), it falls back to the real process command line.
-
-**When to use it:** In production programs where you receive `argv` as `seq[string]` — which is the common case.
+Accepts a pre-split list of tokens — this is more precise than a string because it doesn't require re-parsing shell quotes. Optimal for passing `commandLineParams()`.
 
 ```nim
 import std/parseopt, std/os
 
-# Use the real command line directly as a seq — no re-splitting needed
+# From real arguments — the most correct way
 var p = initOptParser(commandLineParams())
 
-# Or pass an explicit list, useful in unit tests
-var q = initOptParser(@["--output", "report.pdf", "-v", "input.md"])
+# From explicit list (e.g., in tests)
+var p2 = initOptParser(@["--output", "file.txt", "-v", "input.nim"])
+
+# With no-value options
+var p3 = initOptParser(
+  @["--verbose", "-n", "10"],
+  shortNoVal = {'v'},
+  longNoVal = @["verbose", "help"]
+)
+```
+
+### `initOptParser` Parameters Summary
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `cmdline` | `string` or `seq[string]` | `""` / `@[]` | Arguments to parse. Empty → real process arguments |
+| `shortNoVal` | `set[char]` | `{}` | Short options that do **not** accept values |
+| `longNoVal` | `seq[string]` | `@[]` | Long options that do **not** accept values |
+| `mode` | `CliMode` | `NimMode` | Parser behavior mode |
+
+---
+
+## 5. Iterator `getopt`
+
+The `getopt` iterator is the main and most convenient way to iterate over all tokens. It exists in two variants.
+
+### From Existing `OptParser`
+```nim
+iterator getopt*(p: var OptParser): tuple[kind: CmdLineKind, key, val: string]
+```
+
+Iterates over tokens stored in an already-created `OptParser`. Automatically stops at `cmdEnd` — no need to check it inside a `for` loop. When using `case` with `cmdEnd`, use `assert(false)` or `discard`.
+
+```nim
+import std/parseopt
+
+var p = initOptParser("--left --debug:3 -l -r:2")
+for kind, key, val in p.getopt():
+  case kind
+  of cmdArgument:
+    echo "Argument: ", key
+  of cmdLongOption, cmdShortOption:
+    if val == "":
+      echo "Flag: ", key
+    else:
+      echo "Option: ", key, " = ", val
+  of cmdEnd:
+    assert false  # never reached
+```
+
+### Directly from Arguments
+```nim
+iterator getopt*(cmdline: seq[string] = @[];
+                 shortNoVal: set[char] = {};
+                 longNoVal: seq[string] = @[];
+                 mode: CliMode = NimMode):
+    tuple[kind: CmdLineKind, key, val: string]
+```
+
+Creates an `OptParser` internally and iterates immediately. Parameters are the same as for `initOptParser`. If `cmdline` is empty, real process arguments are used.
+
+```nim
+import std/parseopt
+
+# Shortest way to process real arguments
+for kind, key, val in getopt():
+  case kind
+  of cmdShortOption, cmdLongOption:
+    echo key, " = ", val
+  of cmdArgument:
+    echo "file: ", key
+  of cmdEnd: discard
+
+# With explicit list and settings
+for kind, key, val in getopt(
+    @["--output=file.txt", "-v"],
+    shortNoVal = {'v'},
+    longNoVal = @["verbose"]):
+  discard
+```
+
+### Full Example Handling All Token Types
+```nim
+import std/parseopt
+
+let cmds = "-ab -e:5 --foo --bar=20 file.txt".parseCmdLine()
+var output: seq[string] = @[]
+
+for kind, key, val in getopt(cmds):
+  case kind
+  of cmdEnd: break
+  of cmdShortOption, cmdLongOption:
+    if val == "":
+      output.add("Option: " & key)
+    else:
+      output.add("Option and value: " & key & ", " & val)
+  of cmdArgument:
+    output.add("Argument: " & key)
+
+doAssert output == @[
+   "Option: a",
+   "Option: b",
+   "Option and value: e, 5",
+   "Option: foo",
+   "Option and value: bar, 20",
+   "Argument: file.txt"
+]
 ```
 
 ---
 
-## `next`
+## 6. Manual Traversal: `next`
 
 ```nim
 proc next*(p: var OptParser)
 ```
 
-**What it does:** Advances the parser by **one token** and updates `p.kind`, `p.key`, and `p.val` to describe that token. When the end of the command line is reached, sets `p.kind = cmdEnd` and returns immediately on all subsequent calls.
+Advances the parser by one token. After the call, fields `p.kind`, `p.key`, and `p.val` contain data about the current token. When arguments are exhausted, `p.kind` becomes `cmdEnd`.
 
-This is the fundamental operation of the module — `getopt` is simply a loop around `next`. You use `next` directly when you need fine-grained control: for example, to stop parsing in the middle, to handle `--` specially, or to inspect `remainingArgs` at a particular point.
-
-**Important:** `next` mutates the parser in place (`var OptParser`), so the parser must be declared as `var`.
+Used when finer control over the parsing process is needed: e.g., breaking mid-stream, skipping a token, or handling `--` followed by retrieving remaining arguments.
 
 ```nim
 import std/parseopt
@@ -196,292 +299,565 @@ import std/parseopt
 var p = initOptParser("--left -r:2 file.txt")
 
 p.next()
-assert p.kind == cmdLongOption and p.key == "left" and p.val == ""
+doAssert p.kind == cmdLongOption and p.key == "left"
 
 p.next()
-assert p.kind == cmdShortOption and p.key == "r" and p.val == "2"
+doAssert p.kind == cmdShortOption and p.key == "r" and p.val == "2"
 
 p.next()
-assert p.kind == cmdArgument and p.key == "file.txt"
+doAssert p.kind == cmdArgument and p.key == "file.txt"
 
 p.next()
-assert p.kind == cmdEnd   # Nothing left; further calls stay here
+doAssert p.kind == cmdEnd   # end of stream
 ```
 
-**Handling `--` (end-of-options marker):**
-
+### Manual Loop with `next`
 ```nim
 import std/parseopt
 
-var p = initOptParser("--verbose -- foo.txt bar.txt")
-while true:
-  p.next()
-  if p.kind == cmdEnd: break
-  if p.kind == cmdLongOption and p.key == "":
-    # "--" found: everything that follows is a raw argument
-    echo "Remaining: ", p.remainingArgs  # @["foo.txt", "bar.txt"]
-    break
-  echo p.key
-```
-
----
-
-## `cmdLineRest`
-
-```nim
-proc cmdLineRest*(p: OptParser): string
-```
-
-**What it does:** Returns all tokens that have **not yet been consumed** by the parser, reassembled into a single shell-quoted string. This is essentially the not-yet-parsed tail of the command line in a form that can be passed to another process or interpreted by a shell.
-
-> **Platform note:** This procedure is only available on platforms where `quoteShellCommand` is declared (Windows and POSIX). It is not available in NimScript.
-
-**When to use it:** When your program delegates some arguments to a sub-process. After processing your own options, hand off the remainder as a ready-to-use shell string.
-
-```nim
-import std/parseopt
-
-var p = initOptParser("--left -r:2 -- foo.txt bar.txt")
-while true:
-  p.next()
-  if p.kind == cmdLongOption and p.key == "":  # Hit "--"
-    break
-  if p.kind == cmdEnd: break
-
-# Everything after "--" as a shell-ready string
-echo p.cmdLineRest  # "foo.txt bar.txt"
-```
-
----
-
-## `remainingArgs`
-
-```nim
-proc remainingArgs*(p: OptParser): seq[string]
-```
-
-**What it does:** Returns a `seq[string]` of all tokens that have **not yet been consumed** by the parser. Unlike `cmdLineRest`, this gives you the raw individual strings, not a single shell-quoted one. This is easier to work with in Nim code.
-
-**When to use it:** When you want to collect leftover arguments as a list — for example, all positional file arguments that appear after a `--` separator, or when you stop parsing early and need to pass the rest somewhere.
-
-```nim
-import std/parseopt
-
-var p = initOptParser("--left -r:2 -- foo.txt bar.txt")
-while true:
-  p.next()
-  if p.kind == cmdLongOption and p.key == "":  # Hit "--"
-    break
-  if p.kind == cmdEnd: break
-
-let rest = p.remainingArgs
-assert rest == @["foo.txt", "bar.txt"]
-
-for f in rest:
-  echo "Will process: ", f
-```
-
----
-
-## `getopt` (iterator over OptParser)
-
-```nim
-iterator getopt*(p: var OptParser): tuple[kind: CmdLineKind, key, val: string]
-```
-
-**What it does:** A convenience iterator that wraps `next` in a loop. It resets the parser to the beginning (`pos = 0`, `idx = 0`) and then repeatedly calls `next`, yielding each `(kind, key, val)` tuple until `cmdEnd` is reached — at which point it stops without yielding. You never see `cmdEnd` in the loop body.
-
-**When to use it:** When you want to iterate over a pre-built `OptParser` using a `for` loop instead of a manual `while true` / `next` / `break` loop. Slightly more expressive than the manual form.
-
-**Important difference from the standalone `getopt`:** This overload takes an existing `OptParser` by `var` reference, so it **resets** the parser each time it is called. If you have already advanced the parser with `next`, calling this iterator will restart from the beginning.
-
-```nim
-import std/parseopt
-
-var p = initOptParser("--output=report.pdf -v input.md")
-
-for kind, key, val in p.getopt():
-  case kind
-  of cmdLongOption, cmdShortOption:
-    echo "Option: ", key, if val != "": " = " & val else: ""
-  of cmdArgument:
-    echo "File: ", key
-  of cmdEnd:
-    discard  # never reached here
-```
-
-Output:
-```
-Option: output = report.pdf
-Option: v
-File: input.md
-```
-
----
-
-## `getopt` (standalone iterator)
-
-```nim
-iterator getopt*(cmdline: seq[string] = @[],
-                 shortNoVal: set[char] = {},
-                 longNoVal: seq[string] = @[]):
-         tuple[kind: CmdLineKind, key, val: string]
-```
-
-**What it does:** A self-contained convenience iterator that creates an `OptParser` internally and immediately iterates over it. When `cmdline` is empty (`@[]`), it reads the real process command line. You never need to create an `OptParser` explicitly when using this form.
-
-**When to use it:** In straightforward programs where you process command line arguments exactly once, from start to finish, without needing to pause, backtrack, or inspect `remainingArgs`. It is the most concise option for the common case.
-
-```nim
-import std/parseopt
-
-var output = "a.out"
-var verbose = false
-var files: seq[string]
-
-for kind, key, val in getopt():
-  case kind
-  of cmdShortOption, cmdLongOption:
-    case key
-    of "o", "output":  output  = val
-    of "v", "verbose": verbose = true
-  of cmdArgument:
-    files.add(key)
-  of cmdEnd:
-    discard  # never reached inside getopt loop
-
-echo output, " | ", verbose, " | ", files
-```
-
-**With explicit argument list (useful in tests):**
-
-```nim
-import std/parseopt
-
-for kind, key, val in getopt(@["--output=out.txt", "-v", "main.nim"]):
-  echo kind, " | ", key, " | ", val
-```
-
----
-
-## `shortNoVal` and `longNoVal` explained
-
-These two optional parameters to `initOptParser` (and the standalone `getopt`) teach the parser which options **do not accept a value**. This unlocks additional input syntax that would otherwise be ambiguous.
-
-### The problem: ambiguous clusters and space-separated values
-
-Consider the command line `-j4`. Without any hints, the parser has no way to know if this means "option `j` with value `4`" or "options `j` and `4`". Similarly, `--jobs 4` — is `4` the value of `--jobs`, or a separate argument?
-
-By default, the parser takes the safe, conservative interpretation:
-- `-j4` → short option `j`, then short option `4` (two separate options)
-- `--jobs 4` → long option `jobs` (no value), then argument `4`
-
-### The solution: declare which options take no value
-
-Once you tell the parser which options **never** have values, it can infer that all *other* options **do** have values, enabling the natural syntax:
-
-```nim
-import std/parseopt
-
-# Without hints: -j4 is two options; --first bar is one option + one argument
-var p1 = initOptParser("-j4 --first bar")
-for kind, key, val in p1.getopt():
-  echo kind, " | ", key, " | ", val
-# cmdShortOption | j  |
-# cmdShortOption | 4  |
-# cmdLongOption  | first |
-# cmdArgument    | bar |
-
-# With hints: 'j' is not in shortNoVal, so -j4 means j=4
-#             "first" is not in longNoVal, so --first bar means first=bar
-var p2 = initOptParser("-j4 --first bar",
-                       shortNoVal = {'v'},      # 'v' takes no value; 'j' does
-                       longNoVal  = @["verbose"]) # "verbose" takes no value; "first" does
-for kind, key, val in p2.getopt():
-  echo kind, " | ", key, " | ", val
-# cmdShortOption | j     | 4
-# cmdLongOption  | first | bar
-```
-
-### When to use it
-
-Use `shortNoVal` and `longNoVal` when your CLI uses:
-- `-j8` style (make-style parallelism count)
-- `--jobs 8` style (GNU-style space-separated value)
-
-Keep these sets/sequences **in sync with your actual option definitions**. If you add a new flag-only option but forget to add it to `shortNoVal`/`longNoVal`, the parser will unexpectedly consume the next token as its value.
-
----
-
-## Complete practical example
-
-A realistic program that combines all the features:
-
-```nim
-import std/parseopt, std/os
-
-# Defaults
-var
-  outputFile  = "a.out"
-  verbosity   = 0
-  jobs        = 1
-  inputFiles: seq[string]
-
-proc writeHelp() =
-  echo """Usage: mytool [options] <files>
-Options:
-  -h, --help          Show this help
-  -v, --verbose       Increase verbosity (repeatable)
-  -j<N>, --jobs <N>   Number of parallel jobs (default: 1)
-  -o, --output <file> Output file (default: a.out)
-  --                  Stop option processing
-"""
-
-var p = initOptParser(commandLineParams(),
-                      shortNoVal = {'h', 'v'},
-                      longNoVal  = @["help", "verbose"])
-
+var p = initOptParser("--verbose -o output.txt data.csv")
 while true:
   p.next()
   case p.kind
   of cmdEnd: break
-  of cmdLongOption and p.key == "":   # bare "--"
-    for f in p.remainingArgs: inputFiles.add(f)
-    break
-  of cmdShortOption, cmdLongOption:
-    case p.key
-    of "h", "help":    writeHelp(); quit(0)
-    of "v", "verbose": inc verbosity
-    of "j", "jobs":    jobs = p.val.parseInt
-    of "o", "output":  outputFile = p.val
-    else:
-      echo "Unknown option: ", p.key; quit(1)
+  of cmdLongOption:
+    echo "long: --", p.key, if p.val != "": "=" & p.val else: ""
+  of cmdShortOption:
+    echo "short: -", p.key, if p.val != "": "=" & p.val else: ""
   of cmdArgument:
-    inputFiles.add(p.key)
-
-echo "Output:    ", outputFile
-echo "Verbosity: ", verbosity
-echo "Jobs:      ", jobs
-echo "Files:     ", inputFiles
+    echo "argument: ", p.key
 ```
 
 ---
 
-## Quick Cheat-Sheet
+## 7. Parameters `shortNoVal` and `longNoVal`
 
-| Task | Code |
-|---|---|
-| Create parser from string | `initOptParser("--foo bar")` |
-| Create parser from seq | `initOptParser(commandLineParams())` |
-| Create parser for real argv | `initOptParser()` |
-| Advance one token | `p.next()` |
-| Check token type | `p.kind` → `cmdShortOption`, `cmdLongOption`, `cmdArgument`, `cmdEnd` |
-| Read option name | `p.key` |
-| Read option value | `p.val` (empty string if no value) |
-| Iterate conveniently | `for kind, key, val in p.getopt()` |
-| Iterate without explicit parser | `for kind, key, val in getopt()` |
-| Get unparsed args as seq | `p.remainingArgs` |
-| Get unparsed args as string | `p.cmdLineRest` |
-| Enable `-j4` syntax | `shortNoVal = {'h', 'v'}` (list flags that take no value) |
-| Enable `--jobs 4` syntax | `longNoVal = @["help", "verbose"]` |
-| Detect `--` separator | `p.kind == cmdLongOption and p.key == ""` |
+The `shortNoVal` and `longNoVal` parameters are the key mechanism for controlling whether an option can accept a value without an explicit delimiter.
+
+### Default Behavior (Empty `shortNoVal`/`longNoVal`)
+
+When both parameters are empty (default):
+- A short option accepts a value only via an explicit delimiter (`-k:val`, `-k=val`) or direct adjacency (`-kval` → value `val` for option `k`).
+- `-j4` without a delimiter is parsed as two separate flags: `j` and `4`.
+- `--foo bar` → `--foo` is a flag without a value, `bar` is a separate argument.
+
+```nim
+import std/parseopt
+
+var p = initOptParser("-j4 --first bar")
+# shortNoVal empty → -j and 4 are two different flags
+for kind, key, val in p.getopt():
+  echo kind, ": ", key, " = ", val
+# Output:
+# cmdShortOption: j =
+# cmdShortOption: 4 =
+# cmdLongOption:  first =
+# cmdArgument:    bar =
+```
+
+### With Specified `shortNoVal`/`longNoVal`
+
+When parameters are specified, the parser knows which options do not expect a value. Then:
+- `-j4` with `shortNoVal = {'j'}`: `-j4` → flag `j`, then flag `4` (as before)
+- `-j4` with `shortNoVal` **not** containing `j`: `-j4` → option `j`, value `"4"`
+- `--foo bar` with `longNoVal = @["bar"]`: `--foo` is a flag, `bar` is an argument
+- `--foo bar` with `longNoVal` **not** containing `"foo"`: `--foo` → option with value `bar` (next token)
+
+```nim
+import std/parseopt
+
+var p = initOptParser("-j4 --first bar",
+                      shortNoVal = {'c'},      # 'j' not in list → can accept value
+                      longNoVal = @["second"]) # "first" not in list → can accept value
+for kind, key, val in p.getopt():
+  echo kind, ": ", key, " = ", val
+# Output:
+# cmdShortOption: j = 4
+# cmdLongOption:  first = bar
+```
+
+### Enabling Next-Argument Value-Taking
+
+⚠️ **Important**: Next-argument value-taking (value from the next token) is enabled **only** when `shortNoVal` or `longNoVal` is non-empty. If all your options accept values, pass a dummy element:
+
+```nim
+# All options accept values, but we want to enable --foo bar
+var p = initOptParser(cmdline,
+  shortNoVal = {'\0'},   # dummy element
+  longNoVal = @[""])     # dummy element
+```
+
+### Parser Does Not Forbid Explicit Values for No-Val Options
+
+If a user passes an explicit value (`--foo:bar`) for an option marked as `longNoVal`, the parser still recognizes that value — it does not raise an error. This allows detecting erroneous usage in application code:
+
+```nim
+import std/[sequtils, os, parseopt]
+
+let cmds = "-n:9 --foo:bar".parseCmdLine()
+let parsed = toSeq(cmds.getopt(shortNoVal = {'n'}, longNoVal = @["foo"]))
+
+for (kind, key, val) in parsed:
+  case kind
+  of cmdShortOption, cmdLongOption:
+    if key in ["n", "foo"] and val != "":
+      echo "Error: option ", key, " does not accept values, but received: ", val
+  else: discard
+
+# parsed == @[(cmdShortOption, "n", "9"), (cmdLongOption, "foo", "bar")]
+```
+
+### Behavior Summary Table
+
+| Syntax | `shortNoVal = {}` | `shortNoVal = {'j'}` | `shortNoVal` does not contain `j` |
+|--------|-----------------|----------------------|-----------------------------------|
+| `-j4` | flags `j`, `4` | flags `j`, `4` | option `j = "4"` |
+| `-j:4` | option `j = "4"` | option `j = "4"` | option `j = "4"` |
+| `-j 4` (LaxMode) | flag `j`, argument `4` | flag `j`, argument `4` | option `j = "4"` |
+
+---
+
+## 8. Parser Modes (`CliMode`)
+
+⚠️ Modes `LaxMode` and `GnuMode` are experimental and may change in future Nim versions.
+
+The parser mode is set via the `mode` parameter in `initOptParser` or `getopt`. `NimMode` is used by default.
+
+### `NimMode` (Default)
+
+Standard Nim mode. A balance between convenience and predictability.
+
+**Characteristics:**
+- Both delimiters `:` and `=` are allowed
+- Whitespace before and after delimiter is allowed: `--foo: bar`, `--foo =bar`
+- Short flag bundling: `-abc` → flags `a`, `b`, `c`
+- Adjacent values for short options: `-kval` → option `k = "val"` (only if `k` not in `shortNoVal`)
+- Next-argument (`-k val`) not supported by default (only with non-empty `shortNoVal`)
+- Values starting with `-` are treated as new options
+
+```nim
+import std/parseopt
+
+# NimMode (default)
+for kind, key, val in getopt(@["--foo:bar", "--baz =qux", "-k5"]):
+  echo key, " = ", val
+# foo = bar
+# baz = qux
+# k = 5  (adjacent value)
+```
+
+### `LaxMode`
+
+Most flexible mode. Combines `NimMode` with POSIX-like handling of short options.
+
+**In addition to `NimMode`:**
+- `-c val` is supported: next token becomes value of `-c`
+- `-abc val`: flags `a`, `b`, then option `c = "val"`
+- Values starting with `-` can be passed as option arguments: `-n -10`
+
+```nim
+import std/parseopt
+
+# LaxMode: -c val works
+for kind, key, val in getopt(
+    @["-c", "hello", "--level", "5"],
+    shortNoVal = {'\0'},  # enable next-arg
+    longNoVal = @[""],
+    mode = LaxMode):
+  echo key, " = ", val
+# c = hello
+# level = 5
+```
+
+### `GnuMode`
+
+Follows GNU getopt conventions. Stricter regarding delimiters.
+
+**Characteristics:**
+- Only `=` is a delimiter (`:` is **not** a delimiter)
+- Whitespace around `=` is **not** allowed: `--foo =bar` → option `foo` without value, argument `=bar`
+- `-c val` is supported (like LaxMode)
+- Values starting with `-` are allowed as option arguments
+- Colon `:` has no special meaning
+
+```nim
+import std/parseopt
+
+# GnuMode: only = as delimiter
+for kind, key, val in getopt(
+    @["--foo=bar", "--baz:qux"],
+    mode = GnuMode):
+  echo key, " = ", val
+# foo = bar
+# baz:qux =    ← `:` not a delimiter → entire string is option name
+```
+
+### Mode Comparison Table
+
+| Behavior | NimMode | LaxMode | GnuMode |
+|----------|---------|---------|---------|
+| Delimiter `:` | ✅ | ✅ | ❌ |
+| Delimiter `=` | ✅ | ✅ | ✅ |
+| Whitespace before delimiter | ✅ | ✅ | ❌ |
+| Whitespace after delimiter | ✅ | ✅ | ❌ |
+| `-kval` (adjacent value) | ✅ | ✅ | ✅ |
+| `-k val` (next token) | ❌* | ✅* | ✅* |
+| Values starting with `-` | ❌ | ✅ | ✅ |
+| Bundling `-abc` | ✅ | ✅ | ✅ |
+
+\* Requires non-empty `shortNoVal`/`longNoVal`
+
+### Parsing Identical Strings in Different Modes
+```nim
+import std/parseopt
+
+let cmdline = @["--foo:bar", "--baz", "=qux", "-c", "-10"]
+
+for mode in [NimMode, LaxMode, GnuMode]:
+  echo "=== ", mode, " ==="
+  for kind, key, val in getopt(cmdline,
+      shortNoVal = {'\0'}, longNoVal = @["baz"], mode = mode):
+    echo "   ", kind, ": '", key, "' = '", val, "'"
+```
+
+---
+
+## 9. Getting Remaining Arguments: `cmdLineRest` and `remainingArgs`
+
+Both procedures are intended to retrieve tokens that have not yet been processed by the parser. A typical scenario is handling the `--` separator.
+
+### `remainingArgs`
+```nim
+proc remainingArgs*(p: OptParser): seq[string]
+```
+
+Returns a `seq[string]` of unprocessed tokens. Preferred method — returns tokens in the form they were provided, unchanged.
+
+```nim
+import std/parseopt
+
+var p = initOptParser("--left -r:2 -- foo.txt bar.txt")
+while true:
+  p.next()
+  if p.kind == cmdLongOption and p.key == "":  # caught "--"
+    break
+
+let rest = p.remainingArgs
+doAssert rest == @["foo.txt", "bar.txt"]
+
+# Now rest can be used as a list of files
+for f in rest:
+  echo "Processing file: ", f
+```
+
+### `cmdLineRest`
+```nim
+proc cmdLineRest*(p: OptParser): string
+```
+
+Returns the remainder of the command line as a single string, with restored escaping (via `quoteShellCommand`). Available only on platforms where `quoteShellCommand` is defined (POSIX / Windows).
+
+```nim
+import std/parseopt
+
+var p = initOptParser("--left -r:2 -- foo.txt bar.txt")
+while true:
+  p.next()
+  if p.kind == cmdLongOption and p.key == "":
+    break
+
+echo p.cmdLineRest   # => "foo.txt bar.txt"
+```
+
+### When to Use Which:
+- `remainingArgs` — for programmatic processing: returns structured `seq[string]`
+- `cmdLineRest` — for passing the remainder to another program or shell command as a whole
+
+---
+
+## 10. Deprecated API
+
+### `allowWhitespaceAfterColon` (deprecated)
+```nim
+proc initOptParser*(cmdline = ""; shortNoVal: set[char] = {};
+                    longNoVal: seq[string] = @[];
+                    allowWhitespaceAfterColon: bool): OptParser
+  {.deprecated: "`allowWhitespaceAfterColon` is deprecated, use parser modes instead".}
+```
+
+Old version of `initOptParser` that controlled whitespace around delimiters. Replaced by the `mode` parameter:
+
+| Old Call | New Equivalent |
+|----------|---------------|
+| `initOptParser(cmd, allowWhitespaceAfterColon = true)` | `initOptParser(cmd, mode = NimMode)` ← default |
+| `initOptParser(cmd, allowWhitespaceAfterColon = false)` | `initOptParser(cmd, mode = GnuMode)` |
+
+---
+
+## 11. Practical Examples
+
+### Minimal CLI with Two Options and One Argument
+```nim
+import std/parseopt
+
+proc writeHelp() =
+  echo """
+Usage: mytool [options] <file>
+
+Options:
+  -v, --verbose     Verbose output
+  -o, --output=FILE File for writing result (default: stdout)
+  -h, --help        Show this help
+"""
+
+proc writeVersion() =
+  echo "mytool v1.0.0"
+
+var
+  verbose  = false
+  output   = ""
+  filename = ""
+
+for kind, key, val in getopt(shortNoVal = {'v', 'h'},
+                              longNoVal = @["verbose", "help"]):
+  case kind
+  of cmdEnd: break
+  of cmdArgument:
+    filename = key
+  of cmdShortOption, cmdLongOption:
+    case key
+    of "h", "help":    writeHelp(); quit(0)
+    of "v", "verbose": verbose = true
+    of "o", "output":  output = val
+    else:
+      echo "Unknown option: ", key
+      quit(1)
+
+if filename == "":
+  writeHelp()
+  quit(1)
+
+echo "File: ", filename
+echo "Verbose: ", verbose
+echo "Output: ", if output == "": "(stdout)" else: output
+```
+
+### Default Values and Validation
+```nim
+import std/parseopt, std/strutils
+
+# Default values
+var
+  host    = "localhost"
+  port    = 8080
+  debug   = false
+  workers = 4
+
+for kind, key, val in getopt(shortNoVal = {'d'},
+                              longNoVal = @["debug"]):
+  case kind
+  of cmdEnd: break
+  of cmdArgument:
+    echo "Extra argument: ", key
+  of cmdShortOption, cmdLongOption:
+    case key
+    of "h", "host":
+      host = val
+    of "p", "port":
+      try:
+        port = parseInt(val)
+        if port notin 1..65535:
+          raise newException(ValueError, "port out of range")
+      except ValueError as e:
+        echo "Error: invalid port: ", e.msg
+        quit(1)
+    of "d", "debug":
+      debug = true
+    of "w", "workers":
+      workers = parseInt(val)
+    else:
+      echo "Unknown option: ", key
+      quit(1)
+
+echo "Server: ", host, ":", port
+echo "Debug: ", debug
+echo "Workers: ", workers
+```
+
+### Handling `--` and Positional Arguments After It
+```nim
+import std/parseopt
+
+var
+  options: seq[(string, string)] = @[]
+  files:   seq[string] = @[]
+
+var p = initOptParser()
+while true:
+  p.next()
+  case p.kind
+  of cmdEnd: break
+  of cmdArgument:
+    files.add p.key
+  of cmdLongOption:
+    if p.key == "":   # encountered "--"
+      files.add p.remainingArgs()   # everything after "--" are files
+      break
+    options.add((p.key, p.val))
+  of cmdShortOption:
+    options.add((p.key, p.val))
+
+echo "Options: ", options
+echo "Files: ", files
+```
+
+### Parser with Subcommands (git-style)
+```nim
+import std/parseopt
+
+type SubCommand = enum
+  scNone, scBuild, scTest, scRun
+
+var
+  subcmd  = scNone
+  verbose = false
+  output  = ""
+  args:   seq[string] = @[]
+
+var p = initOptParser()
+p.next()
+
+# First token is subcommand
+if p.kind == cmdArgument:
+  case p.key
+  of "build": subcmd = scBuild
+  of "test":  subcmd = scTest
+  of "run":   subcmd = scRun
+  else:
+    echo "Unknown command: ", p.key
+    quit(1)
+else:
+  echo "Expected subcommand (build, test, run)"
+  quit(1)
+
+# Remaining tokens are subcommand options
+for kind, key, val in p.getopt():
+  case kind
+  of cmdEnd: break
+  of cmdArgument: args.add key
+  of cmdShortOption, cmdLongOption:
+    case key
+    of "v", "verbose": verbose = true
+    of "o", "output":  output = val
+    else:
+      echo "Unknown option: ", key
+
+echo "Command: ", subcmd
+echo "Verbose: ", verbose
+echo "Output:  ", output
+echo "Arguments: ", args
+```
+
+### Usage in Tests (Without Real Arguments)
+```nim
+import std/parseopt
+
+proc parseMyArgs(cmdline: seq[string]): tuple[verbose: bool, files: seq[string]] =
+  result = (verbose: false, files: @[])
+  for kind, key, val in getopt(cmdline, shortNoVal = {'v'},
+                                         longNoVal = @["verbose"]):
+    case kind
+    of cmdArgument:
+      result.files.add key
+    of cmdShortOption, cmdLongOption:
+      if key in ["v", "verbose"]:
+        result.verbose = true
+    of cmdEnd: break
+
+# Unit tests:
+let r1 = parseMyArgs(@["-v", "file.txt"])
+doAssert r1.verbose == true
+doAssert r1.files == @["file.txt"]
+
+let r2 = parseMyArgs(@["--verbose", "a.nim", "b.nim"])
+doAssert r2.verbose == true
+doAssert r2.files == @["a.nim", "b.nim"]
+
+let r3 = parseMyArgs(@["file.txt"])
+doAssert r3.verbose == false
+```
+
+### GNU Mode — Compatibility with `getopt_long`
+```nim
+import std/parseopt
+
+# GNU-style: only =, no whitespace around delimiter, values may start with -
+for kind, key, val in getopt(
+    @["--output=result.txt", "--count=-5", "-v"],
+    shortNoVal = {'v'},
+    longNoVal = @["help"],
+    mode = GnuMode):
+  case kind
+  of cmdShortOption, cmdLongOption:
+    echo key, " => ", val
+  of cmdArgument:
+    echo "arg: ", key
+  of cmdEnd: break
+# output => result.txt
+# count  => -5          ← value starts with -, allowed in GnuMode
+# v      =>
+```
+
+---
+
+## 12. Quick Reference Table
+
+### Types and Enums
+
+| Name | Kind | Description |
+|------|------|-------------|
+| `CmdLineKind` | `enum` | Type of recognized token |
+| `cmdEnd` | value | End of arguments |
+| `cmdArgument` | value | Positional argument |
+| `cmdLongOption` | value | Long option `--foo` |
+| `cmdShortOption` | value | Short option `-f` |
+| `CliMode` | `enum` | Parser behavior mode |
+| `NimMode` | value | Standard mode (default) |
+| `LaxMode` | value | Flexible POSIX-like mode |
+| `GnuMode` | value | GNU-compatible mode |
+| `OptParser` | `object` | Parser object |
+| `OptParser.kind` | field `CmdLineKind` | Type of last token |
+| `OptParser.key` | field `string` | Option name / argument text |
+| `OptParser.val` | field `string` | Option value (or `""`) |
+
+### Procedures and Iterators
+
+| Name | Signature | Description |
+|------|-----------|-------------|
+| `initOptParser` | `(string, ...) → OptParser` | Initialization from string |
+| `initOptParser` | `(seq[string], ...) → OptParser` | Initialization from list |
+| `next` | `(var OptParser)` | Parse next token |
+| `getopt` | `(var OptParser) → iter` | Iterate existing parser |
+| `getopt` | `(seq[string], ...) → iter` | Create parser and iterate |
+| `remainingArgs` | `(OptParser) → seq[string]` | Unprocessed tokens (list) |
+| `cmdLineRest` | `(OptParser) → string` | Unprocessed tokens (string) |
+
+### Supported Syntax by Mode
+
+| Syntax | NimMode | LaxMode | GnuMode |
+|--------|---------|---------|---------|
+| `--foo:bar` | ✅ | ✅ | ❌ |
+| `--foo=bar` | ✅ | ✅ | ✅ |
+| `--foo: bar` (space) | ✅ | ✅ | ❌ |
+| `--foo =bar` (space) | ✅ | ✅ | ❌ |
+| `--foo bar` (next-arg) | ✅* | ✅* | ✅* |
+| `-kval` (adjacent) | ✅ | ✅ | ✅ |
+| `-k val` (next-arg) | ❌ | ✅* | ✅* |
+| `-k -10` (value with `-`) | ❌ | ✅* | ✅* |
+| `-abc` (bundling) | ✅ | ✅ | ✅ |
+
+\* Requires non-empty `shortNoVal`/`longNoVal`
+
+---
+
+*Document compiled from the source code of `std/parseopt` from the Nim standard library. Compatible with Nim 2.x.*
