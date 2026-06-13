@@ -1,116 +1,173 @@
-# `asyncdispatch` Module Reference (Nim)
+# asyncdispatch.nim — module reference
 
-> Nim standard library module for asynchronous I/O.  
-> Implements an event dispatcher, the `Future[T]` type, and the `async`/`await` macro.
+> **Import:** `import std/asyncdispatch`
+> **Scope:** Nim's asynchronous I/O implementation — the event-loop dispatcher, the `Future[T]` type, and support for the `{.async.}` macro / `await`. Re-exports `std/asyncfutures` (the `Future`, `FutureStream` types and operations on them) and `std/asyncstreams`, plus `Port` and `SocketFlag` from `std/net`/`std/nativesockets`.
 
----
+The `asyncdispatch` module is the heart of asynchronous programming in Nim. It does not implement specific protocols (HTTP, TCP servers, etc.) — that's the job of higher-level modules (`asyncnet`, `asynchttpserver`, and so on). Instead, `asyncdispatch` provides the three foundations everything else is built on:
 
-## Table of Contents
-
-1. [Core Concepts](#core-concepts)
-2. [Types](#types)
-3. [Event Dispatcher](#event-dispatcher)
-4. [Sockets: Receiving Data](#sockets-receiving-data)
-5. [Sockets: Sending Data](#sockets-sending-data)
-6. [Sockets: Connecting & Accepting](#sockets-connecting--accepting)
-7. [Timers & Delays](#timers--delays)
-8. [Events, Processes, Signals](#events-processes-signals)
-9. [Event Loop Control](#event-loop-control)
-10. [Helper Functions](#helper-functions)
-11. [Quick Reference](#quick-reference)
+1. **The dispatcher (event loop)** — a global object that polls the operating system (via `epoll` on Linux, IO Completion Ports on Windows, `select`/`kqueue` on other platforms) for completed I/O operations, fired timers, and signals.
+2. **`Future[T]`** — a "promise" of a value that will become available later. A future has three states: *pending*, *completed successfully* (holding a value of type `T`), or *completed with an error* (holding an exception).
+3. **The `{.async.}` macro and `await`** — syntactic sugar that turns code written in the familiar sequential style into a chain of callbacks over futures, without you having to write those callbacks by hand.
 
 ---
 
-## Core Concepts
+## Contents
 
-### Future and the Proactor Pattern
+1. [Concepts: Future, async/await, asynchronous procedures](#concepts-future-asyncawait-asynchronous-procedures)
+2. [Three ways to work with a future: `asyncCheck`, `waitFor`, `await`](#three-ways-to-work-with-a-future)
+3. [Exception handling](#exception-handling)
+4. [Core types](#core-types)
+5. [Managing the dispatcher](#managing-the-dispatcher)
+6. [The event loop: `poll`, `drain`, `runForever`, `waitFor`](#the-event-loop)
+7. [Timers and timeouts: `sleepAsync`, `addTimer`, `withTimeout`](#timers-and-timeouts)
+8. [Asynchronous sockets](#asynchronous-sockets)
+9. [Connecting and address resolution: `connect`, `dial`](#connecting-and-address-resolution)
+10. [Events, signals, and processes](#events-signals-and-processes)
+11. [Descriptor diagnostics](#descriptor-diagnostics)
+12. [Full example: echo server](#full-example-echo-server)
+13. [Quick reference table](#quick-reference-table)
 
-`Future[T]` holds a value that may not be available yet but will be at some point. When an asynchronous operation finishes, the Future is either *completed* with a value or *failed* with an exception.
+---
+
+## Concepts: Future, async/await, asynchronous procedures
+
+### `Future[T]`
+
+A `Future[T]` is an object that **at the moment** may not hold a value of type `T`, but will receive one (or an error) at some point in the future. Any asynchronous function that performs I/O returns a `Future` immediately and **does not block** the thread of execution — but it also doesn't return the actual result right away. The request for the operation is made, and its result will appear later, once the dispatcher processes the corresponding event.
+
+A callback can be attached to a future via `addCallback`, which will be called automatically once it completes:
 
 ```nim
-import asyncdispatch
-
-proc main() {.async.} =
-  let fut = sleepAsync(100)   # returns Future[void]
-  await fut                   # suspend without blocking the thread
-  echo "100 ms have passed"
-
-waitFor main()
+var future = socket.recv(100)
+future.addCallback(
+  proc () =
+    echo(future.read)
+)
 ```
 
-### async / await
+A future's state can be inspected with:
 
-A procedure annotated with `{.async.}` must return `Future[T]` or nothing (implicitly `Future[void]`).  
-Inside such a procedure, `await` suspends execution until the awaited Future completes, without blocking the OS thread.
+- `finished(fut)` — has the operation finished (successfully or with an error)?
+- `failed(fut)` — did it finish specifically with an error?
+- `read(fut)` — return the value (or, if there's an error, raise it as an exception).
+
+### Asynchronous procedures (`{.async.}`)
+
+A procedure marked with the `{.async.}` pragma must return `Future[T]` or have no return type at all (in which case `Future[void]` is assumed). Inside such a procedure, the `await` keyword is available:
 
 ```nim
-proc fetchData(): Future[string] {.async.} =
-  await sleepAsync(50)
-  return "data"
-
-proc main() {.async.} =
-  let data = await fetchData()
-  echo data   # "data"
-
-waitFor main()
+proc fetchAndPrint(socket: AsyncFD) {.async.} =
+  let data = await socket.recv(100)   # suspends execution until the data arrives
+  echo "Received: ", data
 ```
 
-### Exception Handling
+`await fut`:
+
+- if `fut` hasn't completed yet — suspends the current asynchronous procedure (but **not** the thread!) and hands control back to the dispatcher, which may run other asynchronous procedures in the meantime;
+- once `fut` completes, execution of the current procedure resumes from the same point;
+- if `fut` completed with an error — `await` **re-raises that exception** at the call site, so it can be caught with an ordinary `try/except`.
+
+`await` can be used:
+
+- as part of an expression in a variable declaration: `var data = await socket.recv(100)`;
+- as a standalone expression for a `Future[void]`: `await socket.send("hello")`;
+- directly on a future object: `await someFuture`.
+
+> ⚠️ **Limitation.** Asynchronous procedures **do not support mutable (`var`) parameters**, such as `var int`. If you need to pass a value by reference, use a `ref` type (`ref int`, etc.) instead. Additionally, the effect system (`{.raises: [].}`) does not work correctly with asynchronous procedures.
+
+---
+
+## Three ways to work with a future
+
+| Procedure       | Calling context           | Blocking?                                      |
+|-----------------|----------------------------|--------------------------------------------------|
+| `asyncCheck`    | non-async and async        | no                                                 |
+| `waitFor`       | non-async only             | blocks the current thread                         |
+| `await`         | async only                 | suspends the current procedure (not the thread)  |
+
+- **`asyncCheck`** — "fire and forget", except that if the future completes with an error, the exception will be raised (rather than silently dropped). Use it when you don't care about the result but don't want to lose an error. It does not wait for completion — for that, use `waitFor` or `await`.
+- **`waitFor`** — runs `poll()` in a loop until the given `Future` completes, **blocking the current thread**. Used to call asynchronous code from a synchronous context (e.g. from `main`). **Never** use `waitFor` inside a `{.async.}` procedure — it would start a **second**, nested event loop, which can lead to unexpected ordering, double-processing of events, or deadlocks.
+- **`await`** — usable **only** inside `{.async.}` procedures; suspends the current procedure, letting the dispatcher do other work, until the future completes.
+
+> ⚠️ **Never `discard` a future directly** — a future may contain an error, and `discard` will silently drop it. Instead of `discard someAsyncProc()`, use `asyncCheck someAsyncProc()`. `await` already checks for errors on its own, so it's safe to discard its result.
 
 ```nim
-proc main() {.async.} =
+# Wrong — any error will be lost:
+discard sock.send("data")
+
+# Right — an error, if any, will be raised:
+asyncCheck sock.send("data")
+
+# In an async context — await checks for errors automatically:
+proc worker() {.async.} =
+  await sock.send("data")
+```
+
+---
+
+## Exception handling
+
+Inside `{.async.}` procedures, exceptions are handled the same way as in ordinary code — with `try`/`except`:
+
+```nim
+proc fetchSafely(sock: AsyncFD) {.async.} =
   try:
-    let data = await someAsyncOp()
-    echo data
-  except IOError as e:
-    echo "Error: ", e.msg
-
-waitFor main()
+    let data = await sock.recv(100)
+    echo("Received ", data)
+  except:
+    echo "Error while receiving data: ", getCurrentExceptionMsg()
 ```
+
+An alternative approach is to use `yield` instead of `await`. Unlike `await`, `yield` does **not** automatically raise the exception, and the error state must be checked manually via `failed`:
+
+```nim
+proc fetchOrIgnore(sock: AsyncFD) {.async.} =
+  var future = sock.recv(100)
+  yield future
+  if future.failed:
+    echo "The operation failed, ignoring it"
+  else:
+    echo "Received: ", future.read
+```
+
+`yield` is useful when you want to explicitly decide how to handle an error without interrupting execution via an exception — for example, when processing many concurrent futures in a loop, where one of them failing shouldn't abort processing of the rest.
 
 ---
 
-## Types
+## Core types
 
-| Type | Description |
-|------|-------------|
-| `AsyncFD` | Asynchronous file descriptor (wraps `int`/`cint`) |
-| `PDispatcher` | Event dispatcher (thread-local global) |
-| `Callback` | `proc (fd: AsyncFD): bool {.closure, gcsafe.}` — return `true` to remove the handler |
-| `AsyncEvent` | Thread-safe event object (like a semaphore/event handle) |
+### `AsyncFD`
+
+```nim
+type AsyncFD* = distinct int
+```
+
+An asynchronous file/socket descriptor. It's a "wrapper" around an ordinary OS-level descriptor (`SocketHandle`/`FileHandle` on Unix, `Handle` on Windows) that has been **registered with the dispatcher**. Most procedures in the module (`recv`, `send`, `accept`, `addRead`, etc.) take an `AsyncFD`, not a "raw" descriptor — registration is required so the dispatcher can track events on that descriptor.
+
+### `Callback`
+
+```nim
+type Callback* = proc (fd: AsyncFD): bool {.closure, gcsafe.}
+```
+
+The callback type used by the low-level functions `addRead`, `addWrite`, `addTimer`, `addEvent`, `addSignal`, and `addProcess`. The return value tells the dispatcher whether to **keep** watching:
+
+- `true` — stop watching (e.g. the event was one-shot);
+- `false` — keep receiving notifications for this event.
+
+### `AsyncEvent`
+
+An opaque (`ptr`) type representing an event object that can be "triggered" (`trigger`) from any thread — this is the only thread-safe way to "wake up" the event loop from another thread.
+
+### `PDispatcher` / `PDispatcherBase`
+
+The dispatcher type. It holds a timer queue, a queue of deferred calls (`callbacks`, populated via `callSoon`), and, on Unix, a `selector` — a wrapper around `epoll`/`kqueue`/`select`; on Windows, an `ioPort` (IO Completion Port) and a set of registered descriptors, `handles`.
+
+Generally there's no need to work with `PDispatcher` directly — `getGlobalDispatcher`/`setGlobalDispatcher` exist for that purpose.
 
 ---
 
-## Event Dispatcher
-
-### `newDispatcher`
-
-```nim
-proc newDispatcher*(): owned PDispatcher
-```
-
-Creates a new dispatcher instance. Usually not needed directly — use `getGlobalDispatcher` instead.
-
-```nim
-let disp = newDispatcher()
-setGlobalDispatcher(disp)
-```
-
----
-
-### `setGlobalDispatcher`
-
-```nim
-proc setGlobalDispatcher*(disp: sink PDispatcher)
-```
-
-Sets the provided dispatcher as the global dispatcher for the current thread.
-
-```nim
-setGlobalDispatcher(newDispatcher())
-```
-
----
+## Managing the dispatcher
 
 ### `getGlobalDispatcher`
 
@@ -118,71 +175,153 @@ setGlobalDispatcher(newDispatcher())
 proc getGlobalDispatcher*(): PDispatcher
 ```
 
-Returns the global dispatcher for the current thread. Creates one automatically if it doesn't exist yet.
+**What it does.** Returns the event dispatcher for the **current thread** (the dispatcher is stored in a `{.threadvar.}`, i.e. there's a separate one per thread). If no dispatcher has been created yet, one is created automatically on first call. In most programs you never call this directly — it's used internally by `recv`, `send`, `poll`, and so on.
 
 ```nim
-let p = getGlobalDispatcher()
-echo p.timers.len
+let disp = getGlobalDispatcher()
+echo "Dispatcher handle: ", disp.getIoHandler()
 ```
 
----
-
-### `getIoHandler`
+### `setGlobalDispatcher`
 
 ```nim
-# Windows:
-proc getIoHandler*(disp: PDispatcher): Handle
-# Unix:
-proc getIoHandler*(disp: PDispatcher): Selector[AsyncData]
+proc setGlobalDispatcher*(disp: sink PDispatcher)
 ```
 
-Returns the underlying I/O handler — an IO Completion Port handle on Windows or a selector on Unix. Useful for integration with external libraries.
+**What it does.** Replaces the current thread's dispatcher with the one given. Useful in the rare cases where you need to completely "recreate" the event loop — for example in tests, to isolate state between runs — or when manually constructing a dispatcher via `newDispatcher()`. Raises an assertion error if the current (old) dispatcher still has unprocessed `callbacks`.
 
----
+```nim
+import std/asyncdispatch
 
-### `register`
+# Create a "clean" dispatcher, e.g. before running a new test
+setGlobalDispatcher(newDispatcher())
+assert getGlobalDispatcher().callbacks.len == 0
+```
+
+### `register` / `unregister` / `contains`
 
 ```nim
 proc register*(fd: AsyncFD)
-```
-
-Registers a file descriptor with the global dispatcher. Must be called before using `fd` with any async operations.
-
-```nim
-let sock = createAsyncNativeSocket()
-register(sock)
-```
-
----
-
-### `unregister` (fd)
-
-```nim
 proc unregister*(fd: AsyncFD)
-```
-
-Unregisters a file descriptor from the dispatcher.
-
-```nim
-unregister(mySocket)
-```
-
----
-
-### `contains`
-
-```nim
 proc contains*(disp: PDispatcher, fd: AsyncFD): bool
 ```
 
-Checks whether `fd` is registered with dispatcher `disp`.
+**What it does.** `register` adds the descriptor `fd` to the current thread's dispatcher — after this, the dispatcher begins tracking events on it (on Windows this means associating it with the IO Completion Port; on Unix, adding it to the `selector`). `unregister` stops watching the descriptor **without** closing it (closing is a separate operation; for sockets that's `closeSocket`). `contains` (used via the `in` operator) lets you check whether a descriptor is registered with a given dispatcher.
+
+Most high-level procedures (`createAsyncNativeSocket`, `acceptAddr`) already call `register` for you — doing it manually is mostly needed when wrapping "raw" descriptors from third-party libraries.
 
 ```nim
-if getGlobalDispatcher().contains(myFd):
-  echo "Descriptor is active"
+import std/[asyncdispatch, nativesockets]
+
+let raw = createNativeSocket()
+let fd = raw.AsyncFD
+register(fd)
+assert fd in getGlobalDispatcher()
+
+unregister(fd)
+assert fd notin getGlobalDispatcher()
+```
+
+### `callSoon`
+
+```nim
+proc callSoon*(cbproc: proc () {.gcsafe.})
+```
+
+**What it does.** Schedules `cbproc` to be called as soon as possible — it will run as soon as control returns to the event loop (i.e. after the current "slice" of execution, but before the next iteration's timer/IO processing). It's a low-level primitive that, in particular, the `Future` implementation from `asyncfutures` is built on (future callbacks are always invoked via `callSoon`, to avoid deep recursion).
+
+```nim
+import std/asyncdispatch
+
+var executed = false
+callSoon(proc () = executed = true)
+assert not executed
+poll(0)               # runs the code scheduled via callSoon
+assert executed
 ```
 
 ---
+
+## The event loop
+
+### `poll`
+
+```nim
+proc poll*(timeout = 500)
+```
+
+**What it does.** Runs **one** pass of the event loop: a single call to the underlying OS primitive (`epoll_wait`, `kqueue`, `GetQueuedCompletionStatus`, etc.) with a `timeout` in milliseconds, and processes any expired timers and deferred `callSoon` calls. If no descriptors, timers, or deferred calls are registered, it raises `ValueError` ("No handles or timers registered in dispatcher").
+
+`poll` is the "driving force" of all asynchronous code: if nothing ever calls `poll` (directly or via `waitFor`/`runForever`), no asynchronous operation will ever complete, no matter how physically ready it is.
+
+```nim
+import std/asyncdispatch
+
+var fut = sleepAsync(10)
+while not fut.finished:
+  poll()   # without this, fut would never complete
+echo "Done"
+```
+
+### `drain`
+
+```nim
+proc drain*(timeout = 500)
+```
+
+**What it does.** Unlike `poll`, which performs exactly one pass, `drain` **keeps processing events** as long as they're available, until the overall `timeout` has elapsed or there are no more pending operations (`hasPendingOperations() == false`). Handy for "flushing" all accumulated events before terminating a program or before switching dispatchers.
+
+```nim
+import std/asyncdispatch
+
+# Wait for all accumulated operations to be processed (but no longer than 1 second)
+drain(1000)
+```
+
+### `runForever`
+
+```nim
+proc runForever*()
+```
+
+**What it does.** An infinite `while true: poll()` loop. Used in server applications that should run "forever", serving incoming connections. There's no "clean" way to exit this loop from within the process — typically an exception, `quit`, or an OS signal is used.
+
+```nim
+import std/[asyncdispatch, asyncnet]
+
+proc serve() {.async.} =
+  let server = newAsyncSocket()
+  server.setSockOpt(OptReuseAddr, true)
+  server.bindAddr(Port(8080))
+  server.listen()
+  while true:
+    let client = await server.accept()
+    asyncCheck handleClient(client)   # handleClient is your own {.async.} procedure
+
+asyncCheck serve()
+runForever()
+```
+
+### `waitFor`
+
+```nim
+proc waitFor*[T](fut: Future[T]): T
+```
+
+**What it does.** Runs `poll()` in a loop until `fut` completes, then returns `fut.read` (i.e. either the value of type `T`, or re-raises the stored exception if the future completed with an error). This is the **entry point** for running asynchronous code from a synchronous program — for example, from a non-`{.async.}` `proc main()`.
+
+```nim
+import std/asyncdispatch
+
+proc fetchData(): owned(Future[string]) {.async.} =
+  await sleepAsync(100)
+  return "result"
+
+let result = waitFor fetchData()
+assert result == "result"
+```
+
+> ⚠️ Never call `waitFor` from inside another `{.async.}` procedure: it would start a **second**, nested `poll` loop, which can lead to unexpected execution order, double-processing of events, or deadlocks. Inside async code, always use `await`.
 
 ### `hasPendingOperations`
 
@@ -190,88 +329,121 @@ if getGlobalDispatcher().contains(myFd):
 proc hasPendingOperations*(): bool
 ```
 
-Returns `true` if the global dispatcher has any pending work: registered handles, timers, or deferred callbacks.
+**What it does.** Returns `true` if the global dispatcher has at least one registered descriptor, an active timer, or a deferred (`callSoon`) call. Used internally by `drain`, and can also serve as the condition for your own loops: "keep working as long as there's something to process".
 
 ```nim
+import std/asyncdispatch
+
 while hasPendingOperations():
+  poll()
+echo "All operations completed"
+```
+
+---
+
+## Timers and timeouts
+
+### `sleepAsync`
+
+```nim
+proc sleepAsync*(ms: int | float): owned(Future[void])
+```
+
+**What it does.** Returns a `Future[void]` that completes after `ms` milliseconds (both integer and floating-point values are supported — for the latter, internal precision is increased to nanoseconds). This is the asynchronous, **non-blocking** counterpart to `os.sleep` — while waiting, the dispatcher can do other work.
+
+```nim
+import std/asyncdispatch
+
+proc demo() {.async.} =
+  echo "Start"
+  await sleepAsync(100)   # 100 ms pause, without blocking other tasks
+  echo "100 ms have passed"
+
+waitFor demo()
+```
+
+### `addTimer`
+
+```nim
+proc addTimer*(timeout: int, oneshot: bool, cb: Callback)
+```
+
+**What it does.** A low-level counterpart to `sleepAsync` that works via `Callback` instead of `Future`. Registers a timer with period `timeout` ms:
+
+- `oneshot = true` — fires **once**;
+- `oneshot = false` — fires **periodically**, every `timeout` ms, until `cb` returns `true`.
+
+Useful when you need periodic polling/heartbeat behavior without the overhead of creating a new `Future` on every iteration.
+
+```nim
+import std/asyncdispatch
+
+var ticks = 0
+addTimer(50, oneshot = false, cb = proc (fd: AsyncFD): bool =
+  inc ticks
+  echo "tick ", ticks
+  result = ticks >= 3   # return true after the 3rd tick to stop the timer
+)
+
+while ticks < 3:
   poll()
 ```
 
----
-
-### `closeSocket`
+### `withTimeout`
 
 ```nim
-proc closeSocket*(socket: AsyncFD)
+proc withTimeout*[T](fut: Future[T], timeout: int): owned(Future[bool])
 ```
 
-Closes a socket and unregisters it from the dispatcher in one step. Preferred over calling `close` and `unregister` separately.
+**What it does.** Wraps `fut` in a new `Future[bool]` that completes with whichever of two events happens **first**:
+
+- if `fut` completes first — the result is `true` (the original `fut` itself can still be read separately via `fut.read`/`fut.error` depending on its outcome);
+- if `timeout` milliseconds elapse first — the result is `false`, and the original `fut` **keeps running** in the background (it is not cancelled — `Future` in Nim has no cancellation mechanism at all), but its further callbacks are dropped by this wrapper.
+
+This is the basic building block for adding timeouts to operations that don't natively support them (e.g. `recv`).
 
 ```nim
-closeSocket(clientSock)
-```
+import std/asyncdispatch
 
----
+proc demo() {.async.} =
+  let fut = sleepAsync(1000)            # a "slow" operation taking 1 second
+  if await withTimeout(fut, 100):       # wait at most 100 ms
+    echo "completed in time"
+  else:
+    echo "timed out!"
 
-### `callSoon`
-
-```nim
-proc callSoon*(cbproc: proc () {.gcsafe.}) {.gcsafe.}
-```
-
-Schedules `cbproc` to be called on the next iteration of the event loop. The callback is non-blocking.
-
-```nim
-callSoon(proc () = echo "called soon")
-poll()
+waitFor demo()  # prints "timed out!"
 ```
 
 ---
 
-### `activeDescriptors`
+## Asynchronous sockets
+
+This part of the module provides low-level asynchronous operations on `AsyncFD`. In application code, `std/asyncnet` (the `AsyncSocket` object wrapper) is more commonly used, but the procedures from `asyncdispatch` are its foundation.
+
+### `createAsyncNativeSocket`
 
 ```nim
-proc activeDescriptors*(): int {.inline.}
+proc createAsyncNativeSocket*(domain: Domain = Domain.AF_INET,
+                              sockType: SockType = SOCK_STREAM,
+                              protocol: Protocol = IPPROTO_TCP,
+                              inheritable = defined(nimInheritHandles)): AsyncFD
+
+proc createAsyncNativeSocket*(domain: cint, sockType: cint,
+                              protocol: cint,
+                              inheritable = defined(nimInheritHandles)): AsyncFD
 ```
 
-Returns the current number of active file descriptors in the event loop. This is a cheap operation — no system call is made.
+**What it does.** Creates a new non-blocking ("asynchronous") socket, sets it to non-blocking mode (`setBlocking(false)`), and **automatically registers** it with the current thread's dispatcher (`register`). Returns `osInvalidSocket.AsyncFD` if creating the socket at the OS level fails. The first overload takes the "friendly" enum types `Domain`/`SockType`/`Protocol` from `std/nativesockets`; the second takes "raw" `cint` values for compatibility with low-level code.
+
+The `inheritable` parameter controls whether the socket will be inherited by child processes (default: no, matching common practice for server sockets).
 
 ```nim
-echo "Active connections: ", activeDescriptors()
+import std/[asyncdispatch, nativesockets, net]
+
+let sock = createAsyncNativeSocket(Domain.AF_INET, SockType.SOCK_STREAM, IPPROTO_TCP)
+assert sock in getGlobalDispatcher()
 ```
-
----
-
-### `maxDescriptors`
-
-```nim
-proc maxDescriptors*(): int {.raises: OSError.}
-```
-
-Returns the maximum number of file descriptors for the current process (requires a system call). Supported on Windows, Linux, macOS, BSD, Solaris.
-
-```nim
-echo "Max descriptors: ", maxDescriptors()
-```
-
----
-
-### `setInheritable`
-
-```nim
-proc setInheritable*(fd: AsyncFD, inheritable: bool): bool
-```
-
-Controls whether a file handle can be inherited by child processes. Availability is platform-dependent — check with `declared(setInheritable)`.
-
-```nim
-when declared(setInheritable):
-  discard myFd.setInheritable(false)
-```
-
----
-
-## Sockets: Receiving Data
 
 ### `recv`
 
@@ -280,22 +452,18 @@ proc recv*(socket: AsyncFD, size: int,
            flags = {SocketFlag.SafeDisconn}): owned(Future[string])
 ```
 
-Reads **up to** `size` bytes from `socket`. The Future completes when data is available, when a partial read occurs, or when the socket disconnects (result is `""`).
-
-> ⚠️ The `Peek` flag is not supported on Windows.
+**What it does.** Reads **up to** `size` bytes from `socket`. The future completes once: all requested data has been read, part of the data has been read, or the socket has disconnected (in the latter case, with the value `""`). The `SocketFlag.Peek` flag is **not supported on Windows**. The `SafeDisconn` flag (enabled by default) suppresses the typical "errors" caused by a disconnect, turning them into a normal completion with an empty string rather than an exception — this simplifies handling clients that simply closed the connection.
 
 ```nim
-proc handler() {.async.} =
-  let data = await socket.recv(1024)
+import std/asyncdispatch
+
+proc echoOnce(sock: AsyncFD) {.async.} =
+  let data = await recv(sock, 1024)
   if data.len == 0:
-    echo "Connection closed"
+    echo "Client disconnected"
   else:
     echo "Received: ", data
-
-waitFor handler()
 ```
-
----
 
 ### `recvInto`
 
@@ -304,135 +472,104 @@ proc recvInto*(socket: AsyncFD, buf: pointer, size: int,
                flags = {SocketFlag.SafeDisconn}): owned(Future[int])
 ```
 
-Reads **up to** `size` bytes from `socket` into an existing buffer `buf`. The Future resolves to the number of bytes read (0 on disconnect).
+**What it does.** Same as `recv`, but writes data directly into a pre-allocated buffer `buf` (at least `size` bytes), and returns `Future[int]` — the **number** of bytes read (`0` on disconnect). Avoids an extra string allocation if you already have a buffer (e.g. from a buffer pool).
 
 ```nim
-proc handler() {.async.} =
-  var buf = newString(4096)
-  let bytesRead = await socket.recvInto(addr buf[0], buf.len)
-  buf.setLen(bytesRead)
-  echo "Read ", bytesRead, " bytes"
+import std/asyncdispatch
 
-waitFor handler()
+proc readChunk(sock: AsyncFD): owned(Future[int]) =
+  var buf = newString(4096)
+  recvInto(sock, addr buf[0], buf.len)
 ```
 
----
-
-### `recvFromInto`
+### `send`
 
 ```nim
+proc send*(socket: AsyncFD, data: string,
+           flags = {SocketFlag.SafeDisconn}): owned(Future[void])
+
+proc send*(socket: AsyncFD, buf: pointer, size: int,
+           flags = {SocketFlag.SafeDisconn}): owned(Future[void])
+```
+
+**What it does.** Sends data to `socket`; the future completes once **all** the data has been sent. The `string` overload is the most convenient for application code; the `pointer`/`size` overload works with raw memory.
+
+> ⚠️ For the `pointer` overload: if `buf` points into a GC-managed object, you must keep it alive yourself (`GC_ref`/`GC_unref`) for the duration of the async operation — otherwise the garbage collector might free the memory before the send completes. The `string` overload does this for you automatically.
+
+```nim
+import std/asyncdispatch
+
+proc reply(sock: AsyncFD) {.async.} =
+  await send(sock, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+```
+
+### `sendTo` / `recvFromInto`
+
+```nim
+proc sendTo*(socket: AsyncFD, data: pointer, size: int, saddr: ptr SockAddr,
+             saddrLen: SockLen,
+             flags = {SocketFlag.SafeDisconn}): owned(Future[void])
+
 proc recvFromInto*(socket: AsyncFD, data: pointer, size: int,
                    saddr: ptr SockAddr, saddrLen: ptr SockLen,
                    flags = {SocketFlag.SafeDisconn}): owned(Future[int])
 ```
 
-Receives a UDP datagram from `socket` into `data`. The sender's address is written to `saddr`/`saddrLen`. The Future returns the size of the received packet.
+**What it does.** Versions for **datagram** (UDP) sockets, which don't require an established connection. `sendTo` sends data to a specific address `saddr`; `recvFromInto` receives a single datagram, writing the data into `data` and filling in `saddr`/`saddrLen` with the sender's address. In application code it's usually more convenient to go through `std/asyncnet` (`sendTo`/`recvFrom` with the `IpAddress` type), but for working directly with `SockAddr` — for example with non-standard socket domains — these procedures are the working low-level tool.
+
+### `acceptAddr` / `accept`
 
 ```nim
-proc udpHandler() {.async.} =
-  var buf = newString(65535)
-  var sender: Sockaddr_storage
-  var senderLen = sizeof(sender).SockLen
-  let size = await socket.recvFromInto(
-    addr buf[0], buf.len,
-    cast[ptr SockAddr](addr sender), addr senderLen
-  )
-  echo "UDP packet of ", size, " bytes"
+proc acceptAddr*(socket: AsyncFD, flags = {SocketFlag.SafeDisconn},
+                 inheritable = defined(nimInheritHandles)):
+    owned(Future[tuple[address: string, client: AsyncFD]])
 
-waitFor udpHandler()
+proc accept*(socket: AsyncFD,
+             flags = {SocketFlag.SafeDisconn},
+             inheritable = defined(nimInheritHandles)): owned(Future[AsyncFD])
 ```
+
+**What it does.** Accepts a new incoming connection on the listening socket `socket`. `acceptAddr` returns **both** the client socket (`AsyncFD`, already automatically registered with the dispatcher) **and** the client's address as a string. `accept` is a simplified wrapper that returns only the client socket (it's implemented via `acceptAddr`, discarding the address).
+
+If the connecting client disconnects during `accept` and the `SafeDisconn` flag is set (the default) — no error is raised, and `accept` is automatically retried.
+
+```nim
+import std/asyncdispatch
+
+proc serverLoop(server: AsyncFD) {.async.} =
+  while true:
+    let (address, client) = await acceptAddr(server)
+    echo "Connection from ", address
+    asyncCheck handleClient(client)
+```
+
+### `closeSocket`
+
+```nim
+proc closeSocket*(socket: AsyncFD)
+```
+
+**What it does.** Closes the socket at the OS level **and** removes its registration from the dispatcher (a combination of `close` + `unregister`). After this call, `socket` must not be used in any further operations of this module.
+
+```nim
+import std/asyncdispatch
+
+proc cleanup(sock: AsyncFD) =
+  closeSocket(sock)
+  assert sock notin getGlobalDispatcher()
+```
+
+### `setInheritable`
+
+```nim
+proc setInheritable*(fd: AsyncFD, inheritable: bool): bool
+```
+
+**What it does.** Controls whether the descriptor `fd` will be inherited by child processes (via `fork`/`exec` on Unix, or `CreateProcess` on Windows). Returns `true` on success. Availability on a given platform can be checked with `declared(setInheritable)`. Useful if a child process needs to be handed an already-open socket.
 
 ---
 
-## Sockets: Sending Data
-
-### `send` (from buffer)
-
-```nim
-proc send*(socket: AsyncFD, buf: pointer, size: int,
-           flags = {SocketFlag.SafeDisconn}): owned(Future[void])
-```
-
-Sends `size` bytes from buffer `buf` to `socket`. The Future completes once all data has been sent.
-
-> ⚠️ If `buf` points to a GC-managed object, use `GC_ref`/`GC_unref` to prevent premature collection.
-
-```nim
-proc sendRaw() {.async.} =
-  var data = "Hello"
-  GC_ref(data)
-  await socket.send(unsafeAddr data[0], data.len)
-  GC_unref(data)
-
-waitFor sendRaw()
-```
-
----
-
-### `send` (string)
-
-```nim
-proc send*(socket: AsyncFD, data: string,
-           flags = {SocketFlag.SafeDisconn}): owned(Future[void])
-```
-
-High-level overload: sends a `string` to `socket`. Safer than the pointer variant since memory management is handled automatically.
-
-```nim
-proc sendMsg() {.async.} =
-  await socket.send("Hello, World!\n")
-
-waitFor sendMsg()
-```
-
----
-
-### `sendTo`
-
-```nim
-proc sendTo*(socket: AsyncFD, data: pointer, size: int,
-             saddr: ptr SockAddr, saddrLen: SockLen,
-             flags = {SocketFlag.SafeDisconn}): owned(Future[void])
-```
-
-Sends a UDP datagram `data` to the destination `saddr`. The Future completes after the send.
-
-```nim
-proc udpSend() {.async.} =
-  var msg = "ping"
-  var dest: Sockaddr_in
-  # ... fill in dest ...
-  await socket.sendTo(
-    addr msg[0], msg.len,
-    cast[ptr SockAddr](addr dest), sizeof(dest).SockLen
-  )
-
-waitFor udpSend()
-```
-
----
-
-## Sockets: Connecting & Accepting
-
-### `createAsyncNativeSocket`
-
-```nim
-proc createAsyncNativeSocket*(
-  domain: Domain = Domain.AF_INET,
-  sockType: SockType = SOCK_STREAM,
-  protocol: Protocol = IPPROTO_TCP,
-  inheritable = defined(nimInheritHandles)
-): AsyncFD
-```
-
-Creates a native non-blocking socket and automatically registers it with the dispatcher. An overload accepting raw `cint` parameters is also available for non-standard protocols.
-
-```nim
-let sock = createAsyncNativeSocket()
-# sock is ready for async operations
-```
-
----
+## Connecting and address resolution
 
 ### `connect`
 
@@ -441,20 +578,7 @@ proc connect*(socket: AsyncFD, address: string, port: Port,
               domain = Domain.AF_INET): owned(Future[void])
 ```
 
-Asynchronously connects an existing `socket` to `address:port`.
-
-```nim
-proc main() {.async.} =
-  let sock = createAsyncNativeSocket()
-  await sock.connect("example.com", Port(80))
-  await sock.send("GET / HTTP/1.0\r\n\r\n")
-  let resp = await sock.recv(4096)
-  echo resp
-
-waitFor main()
-```
-
----
+**What it does.** Establishes a connection to `address:port` using an already-created socket `socket`, with the given `domain` (address family — IPv4/IPv6). This is the "low-level" variant: you must pick a `domain` that matches the one the socket was created with (on Unix, a mismatch triggers an `assert`).
 
 ### `dial`
 
@@ -463,209 +587,74 @@ proc dial*(address: string, port: Port,
            protocol: Protocol = IPPROTO_TCP): owned(Future[AsyncFD])
 ```
 
-Creates a socket, resolves all IP addresses (both IPv4 and IPv6) for `address`, and connects to the first successful one. Returns an `AsyncFD` ready to send and receive.
+**What it does.** A high-level alternative to `connect`: it **itself** performs DNS resolution of `address` (via `getAddrInfo`) and iterates over **all** the addresses returned (both IPv4 **and** IPv6), trying to connect to each in turn until one succeeds. It returns an already-connected `AsyncFD`, registered with the dispatcher and ready to use. Unlike `connect`, it doesn't require the socket to already exist, nor does it require you to know in advance which IP version will be used — `dial` creates a socket of the appropriate type itself.
 
 ```nim
-proc main() {.async.} =
+import std/[asyncdispatch, net]
+
+proc fetchExample() {.async.} =
   let sock = await dial("example.com", Port(80))
-  await sock.send("GET / HTTP/1.0\r\n\r\n")
-  echo await sock.recv(4096)
+  await send(sock, "GET / HTTP/1.0\r\nHost: example.com\r\n\r\n")
+  let response = await recv(sock, 4096)
+  echo response
+  closeSocket(sock)
 
-waitFor main()
+waitFor fetchExample()
 ```
+
+> **`dial` vs. `connect` + `createAsyncNativeSocket`.** If the server's address could be either IPv4 or IPv6 (the typical case for domain names), and you don't care which specific socket ends up being created — use `dial`. If you're working with an already-existing socket of a specific domain (e.g. a Unix domain socket, or a socket already accepted via `acceptAddr`), use `connect`.
 
 ---
 
-### `acceptAddr`
+## Events, signals, and processes
 
-```nim
-proc acceptAddr*(socket: AsyncFD,
-                 flags = {SocketFlag.SafeDisconn},
-                 inheritable = defined(nimInheritHandles)):
-    owned(Future[tuple[address: string, client: AsyncFD]])
-```
+This group of procedures lets you plug arbitrary OS notification sources into the event loop — custom events (for waking up from another thread), Unix signals, and the exit of external processes.
 
-Accepts an incoming connection on `socket`. The Future returns a tuple with the client's IP address string and its socket. The client socket is automatically registered with the dispatcher.
-
-```nim
-proc server(listener: AsyncFD) {.async.} =
-  while true:
-    let (address, client) = await listener.acceptAddr()
-    echo "Connected: ", address
-    asyncCheck handleClient(client)
-
-waitFor server(listenerSocket)
-```
-
----
-
-### `accept`
-
-```nim
-proc accept*(socket: AsyncFD,
-             flags = {SocketFlag.SafeDisconn},
-             inheritable = defined(nimInheritHandles)): owned(Future[AsyncFD])
-```
-
-Simplified version of `acceptAddr` that returns only the client socket without the remote address.
-
-```nim
-proc server(listener: AsyncFD) {.async.} =
-  let client = await listener.accept()
-  await client.send("Welcome!\n")
-
-waitFor server(listenerSocket)
-```
-
----
-
-## Timers & Delays
-
-### `sleepAsync`
-
-```nim
-proc sleepAsync*(ms: int | float): owned(Future[void])
-```
-
-Suspends the current async procedure for `ms` milliseconds. Accepts either `int` or `float`.
-
-```nim
-proc main() {.async.} =
-  echo "Start"
-  await sleepAsync(1000)    # 1 second
-  await sleepAsync(500.0)   # 0.5 seconds
-  echo "End"
-
-waitFor main()
-```
-
----
-
-### `withTimeout`
-
-```nim
-proc withTimeout*[T](fut: Future[T], timeout: int): owned(Future[bool])
-```
-
-Returns a Future that completes with `true` if `fut` finishes before `timeout` milliseconds, or `false` if the timeout elapses first.
-
-```nim
-proc main() {.async.} =
-  let longOp = sleepAsync(5000)
-  let completed = await longOp.withTimeout(1000)
-  if completed:
-    echo "Finished in time"
-  else:
-    echo "Timed out!"
-
-waitFor main()
-```
-
----
-
-### `addTimer`
-
-```nim
-proc addTimer*(timeout: int, oneshot: bool, cb: Callback)
-```
-
-Registers a low-level callback `cb` to be called after `timeout` ms.  
-- `oneshot = true` — fires once  
-- `oneshot = false` — fires repeatedly every `timeout` ms  
-
-The callback should return `true` to remove itself, or `false` to keep firing.
-
-> Available on platforms with `ioselSupportedPlatform` (Linux, macOS, BSD) and on Windows.
-
-```nim
-var count = 0
-addTimer(500, false, proc(fd: AsyncFD): bool =
-  inc count
-  echo "Tick #", count
-  return count >= 5  # stop after 5 ticks
-)
-runForever()
-```
-
----
-
-## Events, Processes, Signals
-
-### `newAsyncEvent`
+### `newAsyncEvent` / `trigger` / `close` / `addEvent`
 
 ```nim
 proc newAsyncEvent*(): AsyncEvent
-```
-
-Creates a new thread-safe `AsyncEvent` object. It is not automatically registered with the dispatcher — use `addEvent` to attach a callback.
-
-```nim
-let ev = newAsyncEvent()
-```
-
----
-
-### `trigger`
-
-```nim
 proc trigger*(ev: AsyncEvent)
-```
-
-Sets event `ev` to the signaled state. Safe to call from another thread.
-
-```nim
-ev.trigger()
-```
-
----
-
-### `addEvent`
-
-```nim
+proc close*(ev: AsyncEvent)
 proc addEvent*(ev: AsyncEvent, cb: Callback)
 ```
 
-Registers callback `cb` to be called when `ev` transitions to the signaled state.
+**What it does.** `newAsyncEvent` creates a new event object (a thread-safe synchronization primitive). `addEvent` registers a callback `cb` that will be called when the event becomes signaled. `trigger` puts the event into the signaled state — **it can be safely called from any thread**, including one that didn't start the event loop, which makes `AsyncEvent` the primary mechanism for "waking up" the dispatcher from the outside. `close` releases the event's resources.
 
 ```nim
+import std/[asyncdispatch, os]
+
 let ev = newAsyncEvent()
-addEvent(ev, proc(fd: AsyncFD): bool =
-  echo "Event triggered!"
-  return true  # remove handler
+var notified = false
+addEvent(ev, proc (fd: AsyncFD): bool =
+  notified = true
+  result = true   # stop watching after the first signal
 )
-ev.trigger()
-poll()
+
+# From another thread (here, synchronously for the sake of the example):
+trigger(ev)
+
+while not notified:
+  poll()
+close(ev)
 ```
 
----
-
-### `unregister` (ev)
+### `addSignal` *(Unix only)*
 
 ```nim
-proc unregister*(ev: AsyncEvent)
+proc addSignal*(signal: int, cb: Callback)
 ```
 
-Unregisters the event from the dispatcher.
+**What it does.** Registers `cb` to be called when the process receives the Unix signal `signal` (e.g. `SIGTERM`, `SIGUSR1`). Allows signals to be handled as part of the event loop, without interrupting asynchronous code in the way the OS's standard signal-handling mechanism would.
 
 ```nim
-unregister(ev)
+import std/[asyncdispatch, posix]
+
+addSignal(SIGUSR1.int, proc (fd: AsyncFD): bool =
+  echo "Received SIGUSR1"
+  result = false   # keep listening for the signal
+)
 ```
-
----
-
-### `close` (ev)
-
-```nim
-proc close*(ev: AsyncEvent)
-```
-
-Closes and frees all resources associated with the event.
-
-```nim
-ev.close()
-```
-
----
 
 ### `addProcess`
 
@@ -673,205 +662,121 @@ ev.close()
 proc addProcess*(pid: int, cb: Callback)
 ```
 
-Registers callback `cb` to be called when the process with PID `pid` exits.
+**What it does.** Registers `cb` to be called when the process with ID `pid` exits. Useful for asynchronously waiting on child processes without a blocking `os.waitForExit`.
 
-> Available on Windows and on Unix platforms with `ioselSupportedPlatform`.
-
-```nim
-addProcess(childPid, proc(fd: AsyncFD): bool =
-  echo "Process exited"
-  return true
-)
-```
-
----
-
-### `addSignal` (Unix only)
-
-```nim
-proc addSignal*(signal: int, cb: Callback)
-```
-
-Registers callback `cb` to be called when signal `signal` is received.
-
-> Available only on platforms with `ioselSupportedPlatform` (Linux, macOS, BSD).
-
-```nim
-import posix
-addSignal(SIGTERM.int, proc(fd: AsyncFD): bool =
-  echo "Received SIGTERM, shutting down..."
-  return true
-)
-```
-
----
-
-### `addRead`
+### `addRead` / `addWrite` *(low-level, mainly Unix; limited on Windows)*
 
 ```nim
 proc addRead*(fd: AsyncFD, cb: Callback)
-```
-
-Watches `fd` for read readiness and calls `cb`. On Windows this uses a non-IOCP mechanism — prefer `recv`/`acceptAddr` unless adapting a Unix-style library.
-
-```nim
-addRead(myFd, proc(fd: AsyncFD): bool =
-  echo "Data available to read"
-  return true  # true = stop watching
-)
-```
-
----
-
-### `addWrite`
-
-```nim
 proc addWrite*(fd: AsyncFD, cb: Callback)
 ```
 
-Watches `fd` for write readiness and calls `cb`. On Windows this does not use IOCP.
+**What it does.** Register a callback that's called when `fd` becomes ready for reading/writing, respectively. This is the module's lowest level — used to adapt third-party descriptors that are "synchronous by nature" (pipes, devices, third-party libraries) to the event loop. `cb` should return `true` to stop watching, or `false` to keep receiving notifications.
+
+> ⚠️ **On Windows**, this is not the "native" IOCP mechanism but an emulation via `RegisterWaitForSingleObject` — only use it if you genuinely need to (typically when porting Unix-oriented libraries). If you use `addRead`/`addWrite` on Windows for a socket, **don't mix** this with `recv`/`send`/`accept` from this same module — use the low-level `nativesockets.recv`/`nativesockets.send`/`nativesockets.accept` instead.
+
+---
+
+## Descriptor diagnostics
+
+### `activeDescriptors`
 
 ```nim
-addWrite(myFd, proc(fd: AsyncFD): bool =
-  echo "Socket ready to write"
-  return true
-)
+proc activeDescriptors*(): int {.inline.}
+```
+
+**What it does.** Returns the current number of active file descriptors tracked by the **current thread's** dispatcher. This is a cheap operation that makes no system calls (on Windows it reads the size of the `handles` set; on Unix, the `selector`'s count).
+
+```nim
+import std/asyncdispatch
+
+echo "Active descriptors: ", activeDescriptors()
+```
+
+### `maxDescriptors`
+
+```nim
+proc maxDescriptors*(): int {.raises: OSError.}
+```
+
+**What it does.** Returns the **maximum** number of file descriptors the current process is allowed to open (the system limit — `RLIMIT_NOFILE` on Unix; an approximate constant on Windows). Unlike `activeDescriptors`, this involves a system call. Useful for sizing connection pools: if `activeDescriptors()` is close to `maxDescriptors()`, it's time to start refusing new connections rather than crashing with `EMFILE`.
+
+```nim
+import std/asyncdispatch
+
+let limit = maxDescriptors()
+if activeDescriptors() > limit - 100:
+  echo "Approaching the descriptor limit!"
+```
+
+### `getFuturesInProgress` and tracking "stuck" futures
+
+When compiled with `-d:futureLogging`, the `asyncfutures` module (re-exported here) keeps track of every incomplete `Future`. The `getFuturesInProgress` procedure (from `asyncfutures`) returns a list of them along with the stack traces captured at the moment each one was created — an invaluable tool when diagnosing memory leaks caused by "forgotten" futures that never complete.
+
+```sh
+nim c -d:futureLogging --threads:on myapp.nim
 ```
 
 ---
 
-## Event Loop Control
+## Full example: echo server
 
-### `poll`
-
-```nim
-proc poll*(timeout = 500)
-```
-
-Performs **one** pass of the event loop: waits for ready events and dispatches them. Raises `ValueError` if there are no registered operations.
+This example ties together the module's main procedures: `dial`/`acceptAddr` for network I/O, `recv`/`send` for data exchange, `asyncCheck`/`runForever` for driving the event loop, and `sleepAsync` to demonstrate a non-blocking delay.
 
 ```nim
-# Manual event loop:
-while hasPendingOperations():
-  poll(100)
-```
+import std/[asyncdispatch, nativesockets, net]
 
----
+proc handleClient(client: AsyncFD) {.async.} =
+  defer: closeSocket(client)
+  while true:
+    let line = await recv(client, 1024)
+    if line.len == 0:
+      echo "Client disconnected"
+      break
+    await sleepAsync(10)              # simulate a small processing delay
+    await send(client, "echo: " & line)
 
-### `drain`
+proc serve(port: Port) {.async.} =
+  let server = createAsyncNativeSocket()
+  server.SocketHandle.setSockOptInt(SOL_SOCKET, SO_REUSEADDR, 1)
+  server.SocketHandle.bindAddr(port)
+  server.SocketHandle.listen()
 
-```nim
-proc drain*(timeout = 500)
-```
+  while true:
+    let (address, client) = await acceptAddr(server)
+    echo "New connection from ", address
+    asyncCheck handleClient(client)
 
-Processes **all** available events within `timeout` ms. Unlike `poll`, it does not stop after a single pass.
-
-```nim
-drain(2000)  # handle events for up to 2 seconds
-```
-
----
-
-### `runForever`
-
-```nim
-proc runForever*()
-```
-
-Starts an infinite event loop. Used when the application must run indefinitely (e.g. servers). Never returns.
-
-```nim
+asyncCheck serve(Port(7777))
 runForever()
 ```
 
 ---
 
-### `waitFor`
+## Quick reference table
 
-```nim
-proc waitFor*[T](fut: Future[T]): T
-```
-
-**Blocks** the current thread until `fut` completes, spinning the event loop. Used to call async code from a synchronous context. **Never call inside an async procedure!**
-
-```nim
-proc fetchPage(): Future[string] {.async.} =
-  await sleepAsync(100)
-  return "page content"
-
-let result = waitFor fetchPage()
-echo result
-```
-
----
-
-### `readAll`
-
-```nim
-proc readAll*(future: FutureStream[string]): owned(Future[string]) {.async.}
-```
-
-Reads all string data from a `FutureStream` until it is completed and returns it as a single concatenated string.
-
-```nim
-proc main() {.async.} =
-  let stream = newFutureStream[string]()
-  # ... write to stream ...
-  stream.complete()
-  let allData = await readAll(stream)
-  echo allData
-
-waitFor main()
-```
-
----
-
-## Helper Functions
-
-### `newCustom` (Windows only)
-
-```nim
-proc newCustom*(): CustomRef
-```
-
-Creates a new `OVERLAPPED`-based structure for use with IOCP on Windows. Used when implementing custom async operations at the WinSock level.
-
----
-
-### `scheduleCallbacks` (Genode only)
-
-```nim
-proc scheduleCallbacks*(): bool {.discardable.}
-```
-
-Schedules processing of the `callSoon` queue on the Genode platform. Equivalent to a non-blocking `poll()` — useful for RPC servers that need to dispatch deferred work after retiring a request.
-
----
-
-## Quick Reference
-
-| Goal | Function |
-|------|----------|
-| Run async from sync code | `waitFor myFut` |
-| Wait inside async proc | `await myFut` |
-| Check without waiting | `asyncCheck myFut` |
-| Delay execution | `await sleepAsync(ms)` |
-| Add a timeout | `await myFut.withTimeout(ms)` |
-| Create a socket | `createAsyncNativeSocket()` |
-| Connect to host | `await dial(host, port)` |
-| Accept a connection | `await listener.acceptAddr()` |
-| Read data | `await socket.recv(size)` |
-| Send data | `await socket.send(data)` |
-| Infinite server loop | `runForever()` |
-| Single event loop pass | `poll()` |
-| All events (with drain) | `drain()` |
-| Count active connections | `activeDescriptors()` |
-
----
-
-### Known Limitations
-
-- The effect system (`raises: []`) does not work with async procedures.
-- Mutable parameters (`var T`) are not supported in async procs — use `ref T` instead.
-- `waitFor` must never be called inside an async procedure.
-- Never `discard` a Future directly — use `asyncCheck` to safely ignore results.
+| Task | Procedure(s) |
+|---|---|
+| Run async code from a synchronous `main` | `waitFor` |
+| Run a "background" task without losing errors | `asyncCheck` |
+| Wait for another future inside `{.async.}` | `await` |
+| One pass of the event loop | `poll` |
+| Process all accumulated events | `drain` |
+| Infinite event loop (server) | `runForever` |
+| Non-blocking delay | `sleepAsync` |
+| Periodic callback-based timer | `addTimer` |
+| Bound a future with a timeout | `withTimeout` |
+| Create an asynchronous socket | `createAsyncNativeSocket` |
+| Connect by hostname (IPv4/IPv6) | `dial` |
+| Connect to an already-known address | `connect` |
+| Accept a connection | `acceptAddr` / `accept` |
+| Read/write socket data | `recv`, `recvInto`, `send` |
+| UDP exchange | `sendTo`, `recvFromInto` |
+| Close a socket and remove its registration | `closeSocket` |
+| Register a "raw" descriptor | `register` / `unregister` / `in` |
+| Wake the event loop from another thread | `newAsyncEvent` + `trigger` + `addEvent` |
+| Wait for an OS signal (Unix) | `addSignal` |
+| Wait for a process to exit | `addProcess` |
+| Defer a call with no delay | `callSoon` |
+| How many descriptors are open / allowed | `activeDescriptors`, `maxDescriptors` |
+| Check whether there's unfinished work | `hasPendingOperations` |
