@@ -1,374 +1,563 @@
-# Справочник модуля `std/asyncfutures` для Nim
+# `asyncfutures.nim` — Справочник модуля
 
-> Фундаментальный строительный блок async-системы Nim. Модуль определяет, чем является `Future`, и все операции над ним: создание, завершение, провал, проверку состояния, композицию и реакцию на события. Он автоматически доступен при импорте `std/asyncdispatch`, поэтому напрямую его импортируют редко.
+> **Импорт:** `import std/asyncfutures`
+>
+> **Область применения:** Асинхронное программирование — низкоуровневые примитивы Future для координации конкурентных операций в однопоточном цикле событий без блокировки потока ОС.
 
----
+Модуль `asyncfutures` является фундаментальным слоем асинхронной экосистемы Nim. Он определяет тип `Future[T]` — заместитель для значения, которого ещё не существует — вместе с механизмами завершения, сигнализации об ошибке и композиции Future. Модуль **не** запускает цикл событий самостоятельно — это задача `asyncdispatch`. Вместо этого он предоставляет примитивы, на которых строятся и диспетчер, и пользовательский код: создание, завершение, регистрация коллбэков, операторы композиции (`and`, `or`, `all`) и подключаемый хук планировщика (`callSoon`).
 
-## Содержание
-
-1. [Ключевая концепция: что такое Future?](#ключевая-концепция-что-такое-future)
-2. [Типы данных](#типы-данных)
-   - [FutureBase](#futurebase)
-   - [Future\[T\]](#futuret)
-   - [FutureVar\[T\]](#futurevart)
-   - [FutureError](#futureerror)
-3. [Создание futures](#создание-futures)
-   - [newFuture](#newfuture)
-   - [newFutureVar](#newfuturevar)
-4. [Завершение и провал futures](#завершение-и-провал-futures)
-   - [complete (Future\[T\])](#complete-futuret)
-   - [complete (Future\[void\])](#complete-futurevoid)
-   - [complete (FutureVar\[T\])](#complete-futurevart)
-   - [fail](#fail)
-5. [Чтение результатов](#чтение-результатов)
-   - [read](#read)
-   - [readError](#readerror)
-   - [mget](#mget)
-6. [Проверка состояния](#проверка-состояния)
-   - [finished](#finished)
-   - [failed](#failed)
-7. [Колбэки](#колбэки)
-   - [addCallback (без типа)](#addcallback-без-типа)
-   - [addCallback (типизированный)](#addcallback-типизированный)
-   - [callback= (сеттер)](#callback-сеттер)
-   - [clearCallbacks](#clearcallbacks)
-8. [Композиция futures](#композиция-futures)
-   - [Оператор and](#оператор-and)
-   - [Оператор or](#оператор-or)
-   - [all](#all)
-9. [Запуск без ожидания](#запуск-без-ожидания)
-   - [asyncCheck](#asynccheck)
-10. [Утилиты FutureVar](#утилиты-futurevar)
-    - [clean](#clean)
-11. [Инфраструктура callSoon](#инфраструктура-callsoon)
-    - [callSoon](#callsoon)
-    - [getCallSoonProc](#getcallsoonproc)
-    - [setCallSoonProc](#setcallsoonproc)
-12. [Логирование futures](#логирование-futures)
-    - [isFutureLoggingEnabled](#isfutureloggingenabled)
-    - [getFuturesInProgress](#getfuturesinprogress)
-13. [Полный практический пример](#полный-практический-пример)
-14. [Шпаргалка](#шпаргалка)
+Всё, что есть в `asyncdispatch`, макросах трансформации `async`/`await` и любых сторонних асинхронных библиотеках для Nim, в конечном счёте опирается на типы и процедуры, определённые здесь.
 
 ---
 
-## Ключевая концепция: что такое Future?
+## Оглавление
 
-`Future[T]` — это контейнер-обещание для значения типа `T`, которого ещё не существует. Он представляет асинхронную операцию, выполняющуюся прямо сейчас, которая в какой-то момент либо даст результат, либо завершится ошибкой.
+1. [Обзор API](#обзор-api)
+   - [Типы](#обзор-типов)
+   - [Функции и операторы](#обзор-функций-и-операторов)
+   - [Константы](#обзор-констант)
+2. [Константы, типы и вспомогательные средства](#константы-типы-и-вспомогательные-средства)
+   - [`isFutureLoggingEnabled`](#isfutureloggingenabled)
+   - [`NimAsyncContinueSuffix`](#nimasynccontinuesuffix)
+   - [`FutureBase`](#futurebase)
+   - [`Future[T]`](#futuret)
+   - [`FutureVar[T]`](#futurevart)
+   - [`FutureError`](#futureerror)
+   - [`FutureInfo`](#futureinfo-только-при-futurelogging)
+   - [`CallbackList` (внутренний)](#callbacklist-внутренний)
+   - [`CallbackFunc` (внутренний)](#callbackfunc-внутренний)
+3. [Справочник функций](#справочник-функций)
+   - [`newFuture`](#newfuturet-1)
+   - [`newFutureVar`](#newfuturevart-1)
+   - [`clean`](#cleant-1)
+   - [`complete` — Future[T]](#completet--futuret-1)
+   - [`complete` — Future[void]](#complete--futurevoid-1)
+   - [`complete` — FutureVar (без значения)](#complete--futurevar-без-значения)
+   - [`complete` — FutureVar (со значением)](#complete--futurevar-со-значением)
+   - [`fail`](#failt-1)
+   - [`read`](#readt-1)
+   - [`readError`](#readerrort-1)
+   - [`mget`](#mgett-1)
+   - [`finished`](#finished-1)
+   - [`failed`](#failed-1)
+   - [`asyncCheck`](#asynccheckt-1)
+   - [`addCallback` (без параметров)](#addcallback-без-параметров)
+   - [`addCallback` (типизированный)](#addcallback-типизированный)
+   - [`callback=` (без параметров)](#callback-без-параметров)
+   - [`callback=` (типизированный)](#callback-типизированный)
+   - [`clearCallbacks`](#clearcallbacks-1)
+   - [`callSoon`](#callsoon-1)
+   - [`getCallSoonProc`](#getcallsoonproc-1)
+   - [`setCallSoonProc`](#setcallsoonproc-1)
+   - [`and`](#and-1)
+   - [`or`](#or-1)
+   - [`all`](#allt-1)
+   - [`getFuturesInProgress`](#getfuturesinprogress-только-при-futurelogging)
+4. [Диагностика и отладка](#диагностика-и-отладка)
+5. [Потокобезопасность](#потокобезопасность)
+6. [Полный пример](#полный-пример)
 
-Удобная аналогия — талон в ресторане: вы делаете заказ (запускаете async-операцию), получаете пронумерованный талон (`Future`), и можете вернуться за едой позже (за результатом). Пока вы свободны делать что угодно другое.
+---
 
+## Обзор API
+
+### Обзор типов
+
+| Тип | Вид | Описание |
+|---|---|---|
+| `FutureBase` | `ref object` | Нетипизированная база для всех Future. Хранит коллбэки, статус, ошибку. |
+| `Future[T]` | `ref object of FutureBase` | Типизированный Future, хранящий значение типа `T`. |
+| `FutureVar[T]` | `distinct Future[T]` | Переиспользуемая обёртка над Future для экономии аллокаций. |
+| `FutureError` | `object of Defect` | Выбрасывается при повторном завершении одного Future. |
+| `FutureInfo` | `object` | Отладочная запись (только с флагом `-d:futureLogging`). |
+
+### Обзор функций и операторов
+
+| Процедура | Сигнатура | Описание |
+|---|---|---|
+| `newFuture` | `[T](fromProc = "unspecified"): owned Future[T]` | Создать новый незавершённый Future. |
+| `newFutureVar` | `[T](fromProc = "unspecified"): owned FutureVar[T]` | Создать новый переиспользуемый FutureVar. |
+| `clean` | `[T](future: FutureVar[T])` | Сбросить FutureVar для повторного использования. |
+| `complete` | `[T](future: Future[T], val: sink T)` | Завершить типизированный Future значением. |
+| `complete` | `(future: Future[void])` | Завершить void-Future. |
+| `complete` | `[T](future: FutureVar[T])` | Завершить FutureVar (сохраняя текущее значение). |
+| `complete` | `[T](future: FutureVar[T], val: sink T)` | Завершить FutureVar с новым значением. |
+| `fail` | `[T](future: Future[T], error: ref Exception)` | Завершить Future с ошибкой. |
+| `read` | `[T](future: Future[T] \| FutureVar[T]): lent T` | Прочитать значение завершённого Future. |
+| `readError` | `[T](future: Future[T]): ref Exception` | Вернуть хранящееся исключение без его выброса. |
+| `mget` | `[T](future: FutureVar[T]): var T` | Изменяемый доступ к хранимому значению (без проверки завершённости). |
+| `finished` | `(future: FutureBase \| FutureVar): bool` | True, если Future завершён (успешно или с ошибкой). |
+| `failed` | `(future: FutureBase): bool` | True, если Future завершился с ошибкой. |
+| `asyncCheck` | `[T](future: Future[T])` | Установить коллбэк, выбрасывающий ошибку, если Future завершился неудачно. |
+| `addCallback` | `(future: FutureBase, cb: proc() {.closure, gcsafe.})` | Добавить коллбэк без параметров. |
+| `addCallback` | `[T](future: Future[T], cb: proc(future: Future[T]))` | Добавить типизированный коллбэк, принимающий Future. |
+| `callback=` | `(future: FutureBase, cb: proc())` | Заменить все коллбэки одним (без параметров). |
+| `callback=` | `[T](future: Future[T], cb: proc(future: Future[T]))` | Заменить все коллбэки одним (типизированным). |
+| `clearCallbacks` | `(future: FutureBase)` | Удалить все зарегистрированные коллбэки. |
+| `callSoon` | `(cbproc: proc() {.gcsafe.})` | Запланировать процедуру на следующий тик диспетчера. |
+| `getCallSoonProc` | `(): proc(cbproc: proc()) {.gcsafe.}` | Получить текущую реализацию `callSoon`. |
+| `setCallSoonProc` | `(p: proc(cbproc: proc()) {.gcsafe.})` | Заменить реализацию `callSoon`. |
+| `and` | `[T,Y](fut1: Future[T], fut2: Future[Y]): Future[void]` | Завершиться, когда завершатся **оба** Future. |
+| `or` | `[T,Y](fut1: Future[T], fut2: Future[Y]): Future[void]` | Завершиться, когда завершится **любой** из Future. |
+| `all` | `[T](futs: varargs[Future[T]]): auto` | Завершиться, когда завершатся **все** Future из списка. |
+| `getFuturesInProgress` | `(): var Table[FutureInfo, int]` | *(futureLogging)* Живая таблица незавершённых Future. |
+
+### Обзор констант
+
+| Константа | Тип | Значение | Описание |
+|---|---|---|---|
+| `isFutureLoggingEnabled` | `bool` | `defined(futureLogging)` | Включён ли диагностический журнал Future. |
+| `NimAsyncContinueSuffix` | `string` | `"NimAsyncContinue"` | Внутренний суффикс, используемый макросами async. |
+
+---
+
+## Константы, типы и вспомогательные средства
+
+### `isFutureLoggingEnabled`
+
+```nim
+const isFutureLoggingEnabled* = defined(futureLogging)
 ```
-Машина состояний Future:
-────────────────────────
-           ┌──────────┐
-           │ ожидание │  ← только создан, ещё не завершён
-           └────┬─────┘
-                │
-       ┌────────┴────────┐
-       ▼                 ▼
-  ┌─────────┐       ┌──────────┐
-  │завершён │       │  ошибка  │  ← оба варианта — «finished»
-  └─────────┘       └──────────┘
-```
 
-`Future` считается **finished** (завершённым), когда он либо успешно завершился (содержит значение), либо закончился ошибкой. Проверяется это через `finished` и `failed`. Переводится в завершённое состояние через `complete` или `fail`. Результат извлекается через `read` (которое переброшет исключение, если Future завершился с ошибкой).
+Булева константа времени компиляции, которая равна `true`, если программа собрана с флагом `-d:futureLogging`. При включении каждый вызов `newFuture` регистрирует новый Future в потоко-локальной таблице (`futuresInProgress`), а каждый `complete`/`fail` удаляет его оттуда. Это позволяет в любой момент исполнения проверить, какие Future всё ещё ожидают завершения — полезно для поиска утечек Future в долгоживущих серверах.
+
+Константа также управляет определением `FutureInfo`, `getFuturesInProgress` и внутренних вспомогательных функций `logFutureStart`/`logFutureFinish`. Без флага эти символы не существуют вовсе.
 
 ---
 
-## Типы данных
+### `NimAsyncContinueSuffix`
+
+```nim
+const NimAsyncContinueSuffix* = "NimAsyncContinue"
+```
+
+Строковая метка, используемая внутренне при трансформации `async`/`await` макросом компилятора. Когда компилятор переписывает `async proc` в конечный автомат-продолжение, сгенерированные вспомогательные процедуры получают это имя в качестве суффикса. Пользовательский код никогда не должен конструировать или сравнивать эту строку напрямую. Она экспортируется только для инструментального слоя (отладчики, форматтеры трассировок), чтобы они могли распознавать и фильтровать сгенерированные имена.
+
+---
 
 ### `FutureBase`
 
 ```nim
-type FutureBase* = ref object of RootObj
-  error*:           ref Exception  ## Сохранённая ошибка, если есть
-  errorStackTrace*: string         ## Стек вызовов в момент ошибки
-  # (колбэки, флаг finished и отладочные поля — внутренние)
+type
+  FutureBase* = ref object of RootObj
+    callbacks: CallbackList        # связный список ожидающих коллбэков
+    finished: bool                 # true после complete() или fail()
+    error*: ref Exception          # не nil при завершении с ошибкой
+    errorStackTrace*: string       # трассировка стека, записанная в fail()
+    # только в debug-режиме (отсутствуют при -d:release):
+    stackTrace: seq[StackTraceEntry]
+    id: int
+    fromProc: string
 ```
 
-**Что это:** Нетипизированный базовый класс, общий для всех futures вне зависимости от типа результата. Содержит ошибку, флаг завершённости и список колбэков. В прикладном коде с `FutureBase` работают редко — используйте типизированный `Future[T]`. `FutureBase` нужен в API, которому нужно принимать или возвращать futures произвольных типов (например, обобщённая утилита таймаута).
+`FutureBase` — нетипизированный корень иерархии типов Future. Он существует для того, чтобы код, которому не нужно знать тип значения, — механизм коллбэков, операторы `and`/`or`, `asyncCheck`, интроспекция ошибок — мог работать с любым Future через единый унифицированный интерфейс.
 
-```nim
-proc onDone(f: FutureBase) =
-  if f.failed:
-    echo "Ошибка: ", f.error.msg
-  else:
-    echo "Успешно (тип значения на этом уровне неизвестен)"
-```
+**Публичные поля:**
+
+- `error` — хранит `ref Exception`, переданный в `fail()`. Чтение безопасно в любое время; значение равно `nil` для незавершённого или успешно завершённого Future.
+- `errorStackTrace` — строка трассировки стека, захваченная при вызове `fail()`. Оператор `$` над `seq[StackTraceEntry]` форматирует её, отфильтровывая внутренние фреймы Nim async.
+
+**Поля только для debug** (удаляются при `-d:release`):
+
+- `stackTrace` — стек вызовов в момент вызова `newFuture`. Выводится в сообщениях `FutureError` и в асинхронной трассировке, добавляемой `injectStacktrace`.
+- `id` — монотонно возрастающее целое число (`currentID`), присваиваемое при создании. Уникально в рамках потока и одного запуска.
+- `fromProc` — строка, переданная в `newFuture("имяПроцедуры")`. Идентифицирует владеющую процедуру в сообщениях об ошибках.
 
 ---
 
 ### `Future[T]`
 
 ```nim
-type Future*[T] = ref object of FutureBase
-  # value: T  (внутреннее поле)
+type
+  Future*[T] = ref object of FutureBase
+    value: T
 ```
 
-**Что это:** Типизированная «рабочая лошадка» async-системы. `T` — тип значения, которое future будет содержать после завершения. `Future[void]` используется для операций, которые сигнализируют о завершении без возврата значения (аналог `proc` без возвращаемого типа).
+Основной типизированный Future. Содержит хранимое значение типа `T` вместе с унаследованными от `FutureBase` статусом, коллбэками и ошибкой. Поскольку это `ref object`, присваивание копирует ссылку (не объект), и передача Future занимает O(1).
 
-Это тип, с которым сталкиваются чаще всего — он возвращается каждой `async`-процедурой и большинством I/O-операций в `asyncdispatch`, `asyncfile`, `asyncnet` и т.д.
+Поле `value` закрыто; его можно прочитать только через `read()` или `mget()` (последний — только для `FutureVar[T]`). Запись в `value` из пользовательского кода невозможна — оно устанавливается исключительно через `complete()`.
 
-```nim
-import std/asyncdispatch
-
-proc fetchNumber(): Future[int] {.async.} =
-  await sleepAsync(100)
-  return 42
-
-let f: Future[int] = fetchNumber()
-```
+Когда `T` равно `void`, `Future[void]` используется для операций, которые сигнализируют о завершении без производства значения. `complete()` для `Future[void]` не принимает аргументов; `read()` только выполняет проверку ошибки и возвращает `void`.
 
 ---
 
 ### `FutureVar[T]`
 
 ```nim
-type FutureVar*[T] = distinct Future[T]
+type
+  FutureVar*[T] = distinct Future[T]
 ```
 
-**Что это:** Обёртка-`distinct` над `Future[T]`, предназначенная для **повторного использования**. Обычный `Future[T]` можно завершить только один раз — попытка завершить его повторно является ошибкой программы. `FutureVar[T]` позволяет вызвать `clean` и переиспользовать тот же объект для следующей операции, избегая повторного выделения памяти в горячих циклах. Это низкоуровневая оптимизация, редко нужная в повседневном коде.
+`FutureVar[T]` — обёртка (`distinct`) над `Future[T]`. Ключевое отличие: он явно спроектирован для повторного использования. После вызова `complete()` нужно вызвать `clean()` для сброса флага `finished`, и тогда тот же объект в heap можно завершать снова. Это устраняет нагрузку на аллокатор и GC от создания нового `Future[T]` на каждую итерацию операции.
 
-Ключевое отличие: у `FutureVar` есть процедура `mget`, позволяющая получить доступ к хранимому значению даже до завершения future.
+Тип `distinct` предотвращает случайное смешение с `Future[T]`. Процедуры, принимающие `FutureVar[T]` — `clean`, `mget` и специфичные перегрузки `complete` — отдельны от процедур для `Future[T]`.
+
+**Типичный жизненный цикл:**
+
+```
+newFutureVar → [цикл: mget → заполнить → complete → read → clean → повторить]
+```
+
+`FutureVar` наиболее полезен в плотных I/O-циклах (например, чтение из сокета кусками фиксированного размера), где накладные расходы на аллокацию имеют значение.
 
 ---
 
 ### `FutureError`
 
 ```nim
-type FutureError* = object of Defect
-  cause*: FutureBase  ## Future, вызвавший эту ошибку
+type
+  FutureError* = object of Defect
+    cause*: FutureBase
 ```
 
-**Что это:** `Defect`, возбуждаемый при попытке завершить future, который уже был завершён. Это указывает на логическую ошибку в программе — future был разрешён дважды. Поле `cause` указывает на виновный future, чтобы его можно было изучить в отладчике или обработчике ошибок.
+Выбрасывается внутренней защитой `checkFinished`, когда `complete()` или `fail()` вызывается на уже завершённом Future. Поле `cause` содержит провинившийся Future, чтобы можно было проверить его `id`, `fromProc` и захваченный `stackTrace`.
 
-Проверка срабатывает только в не-release-сборках; в `--define:release` она пропускается ради производительности.
+Полное сообщение об ошибке включает:
+- Числовой ID Future и строку `fromProc`.
+- Трассировку стека в момент вызова `newFuture` (место создания).
+- Строковое значение, если `T == string` (для облегчения отладки).
+- Трассировку стека из второй (ошибочной) точки завершения.
+
+`FutureError` — это `Defect`, а не `Exception`. Дефекты в Nim представляют программные ошибки, которые в production-коде не ожидается перехватывать через `try/except`.
+
+**Эта защита полностью отсутствует в сборках `-d:release`.** Двойное завершение в release-режиме приводит к тихому повреждению состояния Future или, в лучшем случае, к лишним вызовам коллбэков.
 
 ---
 
-## Создание futures
+### `FutureInfo` *(только при futureLogging)*
 
-### `newFuture`
+```nim
+when isFutureLoggingEnabled:
+  type
+    FutureInfo* = object
+      stackTrace*: seq[StackTraceEntry]
+      fromProc*: string
+```
+
+Составной ключ, используемый в таблице `futuresInProgress`. Два Future считаются «одного вида», если у них совпадают трассировка стека при создании и строка `fromProc`. Таблица считает, сколько Future каждого вида в данный момент выполняется.
+
+`FutureInfo` реализует пользовательский `hash`, который комбинирует хеши элементов `stackTrace` (каждый хешируется из `procname`, `line` и `filename`) и `fromProc`.
+
+---
+
+### `CallbackList` *(внутренний)*
+
+```nim
+type
+  CallbackList = object
+    function: CallbackFunc
+    next: owned(ref CallbackList)
+```
+
+Односвязный список коллбэков, встроенный напрямую в `FutureBase`. Первый коллбэк хранится **inline** в объекте `FutureBase` (нет аллокации heap для типичного случая с одним коллбэком). Дополнительные коллбэки аллоцируются в heap через `owned ref`.
+
+Когда вызывается `callbacks.call()` (внутри `complete`/`fail`), он обходит список, вызывая `callSoon(fn)` для каждой ненулевой функции, а затем обнуляет оба поля — `function` и `next`. Это позволяет GC немедленно собрать всю цепочку коллбэков после её срабатывания, а не ждать окончания жизни самого Future.
+
+Обход в порядке добавления гарантирует вызов коллбэков в том же порядке, в котором они были зарегистрированы (FIFO).
+
+---
+
+### `CallbackFunc` *(внутренний)*
+
+```nim
+type
+  CallbackFunc = proc() {.closure, gcsafe.}
+```
+
+Конкретный тип для каждого коллбэка, хранящегося в `CallbackList`. Прагма `{.closure.}` означает, что процедура может захватывать переменные из своего замыкающего контекста. Прагма `{.gcsafe.}` утверждает, что захваченные ссылки безопасны для передачи GC между потоками (важно для интерфейса `callSoon` при использовании многопоточного диспетчера). Пользовательский код никогда не именует этот тип напрямую — он выводится из лямбда-литералов, передаваемых в `addCallback` или `callback=`.
+
+---
+
+## Справочник функций
+
+---
+
+### `newFuture[T]`
 
 ```nim
 proc newFuture*[T](fromProc: string = "unspecified"): owned(Future[T])
 ```
 
-**Что делает:** Создаёт и возвращает новый незавершённый `Future[T]`. Строка `fromProc` — это человекочитаемая метка (по соглашению — имя процедуры-владельца future), которая появляется в сообщениях об ошибках и в отладочном выводе, существенно упрощая поиск того, откуда взялся зависший или упавший future.
+Создаёт и возвращает новый незавершённый `Future[T]`.
 
-**Когда использовать:** Всякий раз, когда реализуете низкоуровневую async-операцию вручную — то есть когда нельзя просто выполнить `await` чего-либо и нужно самому создать future, зарегистрировать колбэк в ОС и разрешить future когда он сработает.
+**Параметры:**
+
+| Параметр | Тип | По умолчанию | Описание |
+|---|---|---|---|
+| `fromProc` | `string` | `"unspecified"` | Имя процедуры-создателя. Отображается в отладочных сообщениях. |
+
+**Возвращает:** `owned Future[T]` — вызывающий код принимает единоличное владение.
+
+**Поведение:**
+
+1. Аллоцирует новый `Future[T]` в heap (`new(result)` через шаблон `setupFutureBase`).
+2. Устанавливает `finished = false`.
+3. В не-release сборках: захватывает текущий стек вызовов через `getStackTraceEntries()`, записывает его в `stackTrace`, присваивает следующее значение `currentID` и записывает `fromProc`.
+4. Если `isFutureLoggingEnabled`: вызывает `logFutureStart`, увеличивая счётчик для ключа `FutureInfo` этого Future в `futuresInProgress`.
+
+**Особенности реализации:** Шаблон `setupFutureBase` (не экспортируется) является фактической реализацией. Это именно `template`, а не `proc`, чтобы `getStackTraceEntries()` захватывал стек **вызывающего**, а не стек внутри `newFuture`. Это критично: если бы это была `proc`, трассировка стека всегда указывала бы внутрь `newFuture`, что было бы бесполезно.
+
+Тип возврата `owned` участвует в экспериментальной системе владения Nim. На практике для большинства кода это означает «вызывающий несёт ответственность за время жизни этого объекта» — Future следует сохранять в переменной или возвращать, а не отбрасывать.
 
 ```nim
-import std/asyncdispatch
+import std/asyncfutures
 
-proc delay(ms: int): Future[void] =
-  var fut = newFuture[void]("delay")
-  addTimer(ms, oneshot = true, cb = proc(fd: AsyncFD): bool =
-    fut.complete()
-    return true
-  )
-  return fut
+let f = newFuture[int]("вычислитьСумму")
+assert not f.finished
+assert f.error == nil
 
-proc main() {.async.} =
-  echo "ожидаем..."
-  await delay(500)
-  echo "готово через 500мс"
-
-waitFor main()
+let g = newFuture[string]()   # fromProc по умолчанию "unspecified"
 ```
 
 ---
 
-### `newFutureVar`
+### `newFutureVar[T]`
 
 ```nim
 proc newFutureVar*[T](fromProc = "unspecified"): owned(FutureVar[T])
 ```
 
-**Что делает:** Создаёт переиспользуемый `FutureVar[T]`. Внутри один раз выделяет `Future[T]` и оборачивает его. После завершения `FutureVar` можно вызвать `clean`, сбросить состояние и использовать тот же объект для следующей операции.
+Создаёт новый `FutureVar[T]` — переиспользуемую обёртку над Future.
 
-**Когда использовать:** В производительно-критичных async-циклах, где однотипная операция выполняется многократно и нужно избежать выделения памяти на каждой итерации. Для большинства прикладного кода обычный `newFuture` понятнее и проще.
+Внутренне вызывает `newFuture[T](fromProc)` и оборачивает результат в `FutureVar[T]` через приведение `typeof(result)(fo)`. Как `Future[T]`, так и обёртка `FutureVar[T]` разделяют один и тот же объект в heap; обёртка `distinct` ничего не стоит во время выполнения.
+
+При включённом `isFutureLoggingEnabled` вызывается `logFutureStart` для базового `Future[T]` (приведённого из `FutureVar[T]`).
 
 ```nim
-import std/asyncdispatch
+import std/asyncfutures
 
-var fv = newFutureVar[string]("reusable-reader")
-
-for i in 0..<1000:
-  fv.clean()              # сбрасываем состояние — готов к следующему использованию
-  fv.complete("chunk-" & $i)
-  echo fv.read()          # "chunk-0", "chunk-1", ...
+var fv = newFutureVar[seq[byte]]("socket.readChunk")
+# fv можно переиспользовать многократно через clean()
 ```
 
 ---
 
-## Завершение и провал futures
+### `clean[T]`
 
-Эти операции переводят future из состояния **ожидание** в **завершён**. Они также запускают все зарегистрированные колбэки.
+```nim
+proc clean*[T](future: FutureVar[T])
+```
 
-### `complete` (Future[T])
+Сбрасывает `FutureVar[T]` так, чтобы его можно было завершить снова.
+
+Устанавливает `Future[T](future).finished = false` и `Future[T](future).error = nil`.
+
+**Что НЕ сбрасывается:**
+
+- `value` — ранее сохранённое значение остаётся на месте. Это намеренно: можно проверить старое значение после `clean()`, а следующий `complete(val)` просто перезапишет его.
+- `callbacks` — список коллбэков не сбрасывается. Любые коллбэки, не срабатывавшие (зарегистрированные после завершения Future) — остаются. На практике `clean()` вызывается уже после того, как все коллбэки сработали и были очищены `callbacks.call()`, так что список уже пуст.
+- Debug-поля (`stackTrace`, `id`, `fromProc`) — не меняются. Future сохраняет свою исходную идентичность для диагностики.
+
+**Почему только `FutureVar`?** Сброс обычного `Future[T]` был бы логической ошибкой: любой код, удерживающий на него ссылку и уже наблюдавший `finished == true`, молча увидел бы, что он снова стал незавершённым. `FutureVar` — это намеренный, явный сигнал, что повторное использование запланировано.
+
+```nim
+var fv = newFutureVar[int]("пример")
+fv.complete(1); echo fv.read()   # 1
+fv.clean()
+assert not fv.finished
+fv.complete(2); echo fv.read()   # 2
+```
+
+---
+
+### `complete[T]` — `Future[T]`
 
 ```nim
 proc complete*[T](future: Future[T], val: sink T)
 ```
 
-**Что делает:** Помечает `future` как успешно завершённый и сохраняет `val` в качестве результата. Все колбэки, зарегистрированные через `addCallback`, планируются к вызову через `callSoon`. Попытка завершить уже завершённый future вызывает `FutureError` (в не-release-сборках).
+Успешно завершает `future`, сохраняя `val` как его результат.
 
-**Когда использовать:** В той точке кода, где async-операция завершается успешно и готова вернуть результат.
+**Шаги (через `completeImpl`):**
+
+1. Вызывает `checkFinished(future)` — в debug-сборках выбрасывает `FutureError`, если Future уже завершён.
+2. Утверждает `future.error == nil` (проверка корректности; должна всегда выполняться в этой точке).
+3. Записывает `val` в `future.value` (с семантикой `sink` — когда компилятор может это организовать, право владения передаётся, а не копируется).
+4. Устанавливает `future.finished = true`.
+5. Вызывает `future.callbacks.call()` — обходит список коллбэков и планирует каждый через `callSoon`.
+6. При включённом логировании: вызывает `logFutureFinish`, уменьшая счётчик в `futuresInProgress`.
+
+После `complete`: `future.finished == true`, `future.error == nil`, `future.value` содержит `val`. Любой вызов `read()` вернёт (заимствованную ссылку на) `val`.
 
 ```nim
-import std/asyncdispatch
-
-proc resolveWithAnswer(): Future[int] =
-  result = newFuture[int]("resolveWithAnswer")
-  result.complete(42)  # немедленно разрешаем
+let f = newFuture[string]("приветствие")
+f.complete("привет, мир")
+assert f.finished and not f.failed
+assert f.read() == "привет, мир"
 ```
 
 ---
 
-### `complete` (Future[void])
+### `complete` — `Future[void]`
 
 ```nim
-proc complete*(future: Future[void])
+proc complete*(future: Future[void], val = Future[void].default)
 ```
 
-**Что делает:** Помечает `Future[void]` как успешно завершённый. Значение не сохраняется — просто сигнализирует, что операция завершилась без ошибки. Правила планирования колбэков те же.
-
-**Когда использовать:** Когда async-операция не возвращает значимого результата — например, операция записи, которой нужно лишь сообщить о своём завершении.
+Завершает `Future[void]`. Параметр `val` — фиктивный с дефолтным значением, никогда не используется; он существует только для удовлетворения обобщённого `completeImpl`. На практике всегда вызывайте как `future.complete()` без аргумента.
 
 ```nim
-import std/asyncdispatch
-
-proc signalDone(): Future[void] =
-  result = newFuture[void]("signalDone")
-  result.complete()
+let f = newFuture[void]("сигнал")
+f.complete()
+assert f.finished
 ```
 
 ---
 
-### `complete` (FutureVar[T])
+### `complete` — `FutureVar` (без значения)
 
 ```nim
 proc complete*[T](future: FutureVar[T])
-proc complete*[T](future: FutureVar[T], val: sink T)
 ```
 
-**Что делает:** Две перегрузки для завершения `FutureVar`. Первая (без значения) помечает его завершённым, полагаясь на то, что значение уже было записано через `mget`. Вторая сохраняет новое значение (перезаписывая предыдущее) и помечает завершённым. Обе запускают колбэки.
+Завершает `FutureVar[T]`, используя значение, уже хранящееся в `mget()`. Вызывает `checkFinished`, устанавливает `finished = true`, запускает коллбэки. Параметра значения нет: эта перегрузка предназначена для паттерна `mget → заполнить → complete`, при котором буфер мутируется на месте, а затем сигнализируется готовность.
+
+```nim
+var fv = newFutureVar[array[4, byte]]("readFixed")
+fv.mget() = [0xDE'u8, 0xAD, 0xBE, 0xEF]
+fv.complete()    # сигнал о готовности буфера
+```
 
 ---
 
-### `fail`
+### `complete` — `FutureVar` (со значением)
+
+```nim
+proc complete*[T](future: FutureVar[T], val: sink T)
+```
+
+Завершает `FutureVar[T]`, перезаписывая хранимое значение на `val`. Эквивалентно `fv.mget() = val; fv.complete()`, но в одном вызове.
+
+```nim
+var fv = newFutureVar[string]("строка")
+fv.complete("первая строка")
+echo fv.read()    # "первая строка"
+fv.clean()
+fv.complete("вторая строка")
+echo fv.read()    # "вторая строка"
+```
+
+---
+
+### `fail[T]`
 
 ```nim
 proc fail*[T](future: Future[T], error: ref Exception)
 ```
 
-**Что делает:** Помечает `future` как завершённый с ошибкой. Исключение `error` сохраняется внутри future и будет переброшено, когда кто-нибудь вызовет `read` на этом future (или когда колбэки проверят `future.failed`). Стек вызовов в момент ошибки также захватывается и сохраняется.
+Завершает `future` в состоянии ошибки.
 
-**Когда использовать:** Когда async-операция столкнулась с невосстановимой ошибкой и не может предоставить результат.
+**Шаги:**
+
+1. `checkFinished(future)` — в debug-сборках защита от двойного завершения.
+2. Устанавливает `future.finished = true`.
+3. Устанавливает `future.error = error`.
+4. Захватывает трассировку стека:
+   - Если `getStackTrace(error)` непустой (исключение уже было выброшено и поймано) — используется эта трассировка.
+   - Иначе — используется `getStackTrace()` из текущей точки вызова.
+   Это сохраняет оригинальное место выброса, когда исключение поймано и передано в `fail`, а не заменяет его местом вызова `fail`.
+5. Запускает коллбэки через `future.callbacks.call()`.
+6. При логировании: вызывает `logFutureFinish`.
+
+После `fail`: `future.finished == true`, `future.failed == true`, любой вызов `read()` перевыбросит `future.error` (с расширенной асинхронной трассировкой в debug-сборках).
 
 ```nim
-import std/asyncdispatch
+let f = newFuture[int]("читатьПорт")
+try:
+  raise newException(OSError, "соединение отклонено")
+except OSError as e:
+  f.fail(e)       # оригинальная трассировка OSError сохранена
 
-proc mightFail(value: int): Future[int] =
-  result = newFuture[int]("mightFail")
-  if value < 0:
-    result.fail(newException(ValueError, "Значение должно быть неотрицательным"))
-  else:
-    result.complete(value * 2)
-
-proc main() {.async.} =
-  try:
-    let x = await mightFail(-1)
-  except ValueError as e:
-    echo "Поймали: ", e.msg
-
-waitFor main()
+assert f.failed
+assert f.error of OSError
 ```
 
 ---
 
-## Чтение результатов
-
-### `read`
+### `read[T]`
 
 ```nim
 proc read*[T](future: Future[T] | FutureVar[T]): lent T
 proc read*(future: Future[void] | FutureVar[void])
 ```
 
-**Что делает:** Извлекает значение из завершённого future. Если future завершился с ошибкой, `read` пробрасывает сохранённое исключение (в не-release-сборках с добавленным async-трейсбэком). Если future ещё не завершён, `read` возбуждает `ValueError` — он **не** блокирует и не ожидает.
+Возвращает значение завершённого Future.
 
-**Когда использовать:** После того, как вы убедились (через `finished`), что future завершён, или внутри колбэка, где известно, что future готов. В `async`-процедурах обычно используется `await`, который вызывает `read` автоматически.
+**Тип возврата:** `lent T` — заимствованная ссылка на внутреннее поле `value`, без копирования. Для `void` ничего не возвращается.
+
+**Поведение:**
+
+- Если `future.finished` и `future.error == nil`: возвращает (заимствование) `future.value`.
+- Если `future.finished` и `future.error != nil`: в debug-сборках вызывает `injectStacktrace(future)` для добавления асинхронной трассировки к сообщению исключения, затем перевыбрасывает `future.error`.
+- Если `not future.finished`: выбрасывает `ValueError("Future still in progress.")`.
+
+**Детали `injectStacktrace`:** Функция проверяет, присутствует ли уже заголовок `"\nAsync traceback:\n"` в сообщении исключения (идемпотентность — повторный вызов `read()` на одном и том же провалившемся Future не дублирует секцию). Если отсутствует, добавляет:
+- Форматированную асинхронную трассировку из `getStackTraceEntries(future.error)`.
+- Строку `"Exception message: <исходное сообщение>\n"` в качестве подвала.
+
+Внутри используется шаблон `readImpl` с локальной переменной `{.cursor.}`, чтобы избежать лишней операции со счётчиком ссылок на Future.
 
 ```nim
-import std/asyncdispatch
+let f = newFuture[float]("вычисление")
+f.complete(3.14)
+let x: float = f.read()     # lent float — без копирования
+assert x == 3.14
 
-proc main() {.async.} =
-  let f = newFuture[string]("example")
-  f.complete("привет")
-
-  # Безопасно вызывать read(), потому что мы знаем, что он завершён
-  echo f.read()   # "привет"
-
-waitFor main()
+# Чтение незавершённого Future:
+let g = newFuture[int]("ожидание")
+try:
+  discard g.read()
+except ValueError as e:
+  assert e.msg == "Future still in progress."
 ```
 
 ---
 
-### `readError`
+### `readError[T]`
 
 ```nim
 proc readError*[T](future: Future[T]): ref Exception
 ```
 
-**Что делает:** Извлекает сохранённое исключение из завершившегося с ошибкой future. Если у future нет ошибки (он либо успешно завершился, либо ещё в ожидании), возбуждает `ValueError`. В отличие от `read`, это не перебрасывает ошибку — оно возвращает её как значение для последующего изучения.
+Возвращает исключение, хранящееся в `future`, без его перевыброса.
 
-**Когда использовать:** Когда вы явно проверили `future.failed` и хотите изучить или залогировать исключение, не перебрасывая его.
+Выбрасывает `ValueError("No error in future.")`, если `future.error == nil`.
+
+Это аналог `read()` для режима «только инспекция без выброса». Полезен, когда нужен сам объект исключения — для логирования, оборачивания в другое исключение или проверки типа — без запуска механизма обработки исключений.
 
 ```nim
-import std/asyncdispatch
+let f = newFuture[int]("сеть")
+f.fail(newException(TimeoutError, "время ожидания чтения истекло"))
 
-proc main() {.async.} =
-  let f = newFuture[void]("example")
-  f.fail(newException(IOError, "диск заполнен"))
-
-  if f.failed:
-    let err = f.readError()
-    echo "Тип ошибки:    ", err.name
-    echo "Сообщение: ", err.msg
-
-waitFor main()
+let err = f.readError()
+assert err of TimeoutError
+echo err.msg     # "время ожидания чтения истекло"
+# err НЕ был выброшен — мы только его проинспектировали
 ```
 
 ---
 
-### `mget`
+### `mget[T]`
 
 ```nim
 proc mget*[T](future: FutureVar[T]): var T
 ```
 
-**Что делает:** Возвращает **изменяемую** ссылку на значение, хранящееся внутри `FutureVar`. В отличие от `read`, не проверяет завершённость future — даёт прямой доступ на запись ко внутреннему значению даже пока future ещё в ожидании. Это механизм для инкрементального заполнения `FutureVar` до его завершения.
+Возвращает изменяемую ссылку (`var T`) на значение, хранящееся внутри `FutureVar[T]`. В отличие от `read()`, **не** проверяет `finished`, не выбрасывает исключение на незавершённом Future и не перевыбрасывает ошибки. Это «сырой» доступ к слоту хранения.
 
-**Когда использовать:** Только с `FutureVar`, в низкоуровневом коде, где результат накапливается по месту (например, паттерн async-чтения в буфер).
+Типичное использование: подготовить выходной буфер **перед** сигнализацией о завершении, избегая лишней аллокации. Поскольку возвращаемая ссылка является `var`, можно индексировать в неё, передавать в `copyMem` или присваивать срезы — всё это без затрагивания статуса Future.
+
+**Доступен только для `FutureVar[T]`**, не для `Future[T]`. Ограничение обеспечивается системой типов: `FutureVar` является `distinct`-типом, поэтому `mget` недостижим через обычный `Future[T]`.
 
 ```nim
-import std/asyncdispatch
-
-var fv = newFutureVar[seq[int]]("accumulate")
-mget(fv).add(1)
-mget(fv).add(2)
-mget(fv).add(3)
+var fv = newFutureVar[seq[byte]]("приём")
+let buf = addr fv.mget()          # взять указатель до завершения
+# ... ОС заполняет buf принятыми байтами ...
+fv.mget().setLen(bytesRead)       # обрезать до фактического размера
 fv.complete()
-
-echo fv.read()   # @[1, 2, 3]
 ```
 
 ---
-
-## Проверка состояния
 
 ### `finished`
 
@@ -376,22 +565,17 @@ echo fv.read()   # @[1, 2, 3]
 proc finished*(future: FutureBase | FutureVar): bool
 ```
 
-**Что делает:** Возвращает `true`, если future завершён (либо успешно, либо с ошибкой). Возвращает `false`, если операция ещё выполняется. Важно: `true` не означает успех — нужно дополнительно проверить `failed`, чтобы различить два исхода.
+Возвращает `true`, если `future` завершён — успешно или с ошибкой.
 
-**Когда использовать:** Перед вызовом `read` за пределами `async`-процедуры, или для неблокирующей проверки состояния future.
+Для `FutureVar` процедура приводит к `FutureBase` перед проверкой, поскольку `FutureVar` является `distinct`-типом и не наследует методы `FutureBase` напрямую.
+
+**Не делает различия между успехом и ошибкой.** Используйте `failed()` или проверяйте `future.error != nil` для различения.
 
 ```nim
-import std/asyncdispatch
-
-proc main() {.async.} =
-  let f = newFuture[int]("example")
-  echo f.finished   # false — ещё в ожидании
-
-  f.complete(7)
-  echo f.finished   # true — готов
-  echo f.failed     # false — завершился успешно
-
-waitFor main()
+let f = newFuture[int]("x")
+assert not f.finished
+f.complete(0)
+assert f.finished   # true независимо от успеха/ошибки
 ```
 
 ---
@@ -402,57 +586,75 @@ waitFor main()
 proc failed*(future: FutureBase): bool
 ```
 
-**Что делает:** Возвращает `true`, если future завершился с ошибкой (т.е. на нём был вызван `fail`). Возвращает `false`, если future ещё в ожидании или завершился успешно.
+Возвращает `true` тогда и только тогда, когда `future.error != nil`.
 
-**Важно:** `failed == false` не означает, что future завершён — он может быть ещё в ожидании. Всегда проверяйте `finished` сначала, если нужно знать, завершён ли он вообще.
+**Предостережение:** Возвращает `false` для **незавершённого** Future (потому что `error` равен nil до вызова `fail()`). Всегда сочетайте с проверкой `finished`, когда различие важно:
 
 ```nim
-import std/asyncdispatch
-
-proc main() {.async.} =
-  let f = newFuture[void]("example")
-  f.fail(newException(ValueError, "упс"))
-
-  echo f.finished   # true
-  echo f.failed     # true — завершился с ошибкой
-
-  let g = newFuture[void]("example2")
-  g.complete()
-
-  echo g.finished   # true
-  echo g.failed     # false — завершился успешно
-
-waitFor main()
+if fut.finished and fut.failed:
+  обработатьОшибку(fut.error)
+elif fut.finished:
+  обработатьЗначение(fut.read())
+else:
+  # ещё ожидается
 ```
 
 ---
 
-## Колбэки
+### `asyncCheck[T]`
 
-Колбэки — это процедуры, зарегистрированные на future и планируемые к вызову при его завершении. Это низкоуровневый механизм, лежащий в основе `await`. Большинство прикладного кода должно использовать `await` напрямую; колбэки нужны для построения комбинаторов или интеграции с не-async-кодом.
+```nim
+proc asyncCheck*[T](future: Future[T])
+```
 
-### `addCallback` (без типа)
+Устанавливает коллбэк, который перевыбрасывает ошибку Future, если тот завершился неудачно. Используется как безопасная альтернатива `discard` для Future, чьи значения намеренно не используются.
+
+**Почему не `discard`?**
+
+```nim
+discard someAsyncProc()    # ← ошибка молча проглочена навсегда
+asyncCheck someAsyncProc() # ← ошибка всплывёт на следующем тике диспетчера
+```
+
+**Реализация:** Использует `future.callback = asyncCheckCallback` (форма присваивания, не `addCallback`), которая очищает все предыдущие коллбэки. Замыкание `asyncCheckCallback` захватывает `future` и при вызове выполняет `injectStacktrace(future)` перед перевыбросом. Это означает, что ошибка — вместе с полной асинхронной трассировкой — распространяется до обработчика необработанных исключений диспетчера.
+
+**Не используйте `asyncCheck`, если планируете впоследствии `await`ить этот Future** — `callback=` очищает предыдущие коллбэки, включая установленные механизмом `await`.
+
+```nim
+proc фоноваяЗадача(): Future[void] =
+  result = newFuture[void]("фоноваяЗадача")
+  result.fail(newException(IOError, "диск заполнен"))
+
+asyncCheck фоноваяЗадача()   # IOError не будет молча потеряна
+```
+
+---
+
+### `addCallback` (без параметров)
 
 ```nim
 proc addCallback*(future: FutureBase, cb: proc() {.closure, gcsafe.})
 ```
 
-**Что делает:** Регистрирует `cb` для вызова при завершении `future`. Можно добавлять несколько колбэков — они хранятся во внутреннем связном списке и все вызываются (через `callSoon`) при завершении future. Если future **уже завершён** на момент вызова `addCallback`, `cb` немедленно планируется через `callSoon`. Колбэк не получает аргументов.
+Добавляет `cb` в список коллбэков Future. Если Future уже завершён на момент вызова, `cb` немедленно планируется через `callSoon(cb)`, а не добавляется в список.
 
-**Когда использовать:** Когда нужно среагировать на завершение future, не имея доступа к его типовому параметру, или при построении обобщённых async-комбинаторов.
+`assert cb != nil` защищает от nil-коллбэков; передача nil — программная ошибка, которая выбросит исключение во всех режимах сборки.
+
+**Механика списка (`CallbackList.add`):**
+
+- Если `callbacks.function` равен nil (пустой список): присвоить `cb` напрямую — без аллокации.
+- Иначе: аллоцировать новый узел `ref CallbackList`, установить его `function`, и обойти до хвоста цепочки для добавления. Это O(n) обход — намеренный: списки коллбэков ожидаются очень короткими (как правило, 1 или 2 записи).
+
+После срабатывания `future.callbacks.call()` (внутри `complete`/`fail`) список очищается (`nil`). Коллбэки, зарегистрированные **после** срабатывания списка, но до сборки объекта Future, будут запланированы немедленно (Future в этот момент уже завершён).
 
 ```nim
-import std/asyncdispatch
-
-proc main() {.async.} =
-  let f = newFuture[int]("example")
-
-  f.addCallback proc() =
-    echo "Future завершён! С ошибкой: ", f.failed
-
-  f.complete(10)  # колбэк планируется здесь
-
-waitFor main()
+let f = newFuture[int]("x")
+f.addCallback proc() =
+  echo "готово (без параметров)"
+f.addCallback proc() =
+  echo "также готово"
+f.complete(1)
+# Оба срабатывают в порядке FIFO: сначала "готово (без параметров)", затем "также готово"
 ```
 
 ---
@@ -460,54 +662,55 @@ waitFor main()
 ### `addCallback` (типизированный)
 
 ```nim
-proc addCallback*[T](future: Future[T], cb: proc(future: Future[T]) {.closure, gcsafe.})
+proc addCallback*[T](future: Future[T],
+                     cb: proc(future: Future[T]) {.closure, gcsafe.})
 ```
 
-**Что делает:** То же, что нетипизированная перегрузка, но колбэк получает завершённый `Future[T]` в качестве аргумента, что делает вызов `read` или проверку результата типобезопасной.
-
-**Когда использовать:** Предпочтительнее нетипизированной перегрузки, когда тип future известен и колбэку нужен доступ к результату.
+Удобная перегрузка, оборачивающая `cb` в замыкание без параметров:
 
 ```nim
-import std/asyncdispatch
+future.addCallback(
+  proc() = cb(future)
+)
+```
 
-proc main() {.async.} =
-  let f = newFuture[string]("greet")
+Внутреннее замыкание захватывает `future` по ссылке. Поскольку `future` является `ref object`, копирования не происходит. Типизированная перегрузка удобнее формы без параметров, когда коллбэку нужно проверить значение или ошибку Future:
 
-  f.addCallback proc(fut: Future[string]) =
-    if not fut.failed:
-      echo "Результат: ", fut.read()   # безопасно — fut завершён
-
-  f.complete("Привет!")
-
-waitFor main()
+```nim
+f.addCallback proc(fut: Future[string]) =
+  if fut.failed:
+    echo "ошибка: ", fut.error.msg
+  else:
+    echo "значение: ", fut.read()
 ```
 
 ---
 
-### `callback=` (сеттер)
+### `callback=` (без параметров)
 
 ```nim
 proc `callback=`*(future: FutureBase, cb: proc() {.closure, gcsafe.})
-proc `callback=`*[T](future: Future[T], cb: proc(future: Future[T]) {.closure, gcsafe.})
 ```
 
-**Что делает:** **Заменяет** все существующие колбэки одним новым. Внутри вызывает `clearCallbacks`, затем `addCallback`. Если future уже завершён, новый колбэк немедленно планируется через `callSoon`.
+Заменяет **все** существующие коллбэки одним `cb`. Сначала вызывает `clearCallbacks`, затем `addCallback`. Если Future уже завершён, `cb` немедленно планируется через `callSoon`.
 
-**Когда использовать:** Когда нужен ровно один колбэк, заменяющий все ранее зарегистрированные. Документация модуля рекомендует предпочитать `addCallback` или `then` этому сеттеру, так как молчаливое отбрасывание существующих колбэков может порождать труднозаметные баги.
+**Когда использовать вместо `addCallback`:** Только когда нужна гарантия, что сработает ровно один коллбэк и вы явно хотите отбросить все ранее зарегистрированные. Используется внутри `asyncCheck` и операторов `and`/`or`.
+
+**Предупреждение:** Использование `callback=` на Future, у которого уже есть коллбэки, зарегистрированные `await`, сломает приостановку `await` — продолжение никогда не будет вызвано. Не смешивайте `callback=` с `await` на одном Future.
+
+---
+
+### `callback=` (типизированный)
 
 ```nim
-import std/asyncdispatch
+proc `callback=`*[T](future: Future[T],
+    cb: proc(future: Future[T]) {.closure, gcsafe.})
+```
 
-proc main() {.async.} =
-  let f = newFuture[void]("example")
-  f.addCallback proc() = echo "первый"
+Типизированная форма `callback=`. Реализована как:
 
-  # Заменяет колбэк "первый" — он никогда не выполнится
-  f.callback = proc() = echo "второй"
-
-  f.complete()   # печатается только "второй"
-
-waitFor main()
+```nim
+future.callback = proc() = cb(future)
 ```
 
 ---
@@ -518,161 +721,11 @@ waitFor main()
 proc clearCallbacks*(future: FutureBase)
 ```
 
-**Что делает:** Удаляет все колбэки, зарегистрированные на `future`. После этого завершение или провал future не вызовет ни одного колбэка. Используется внутренне сеттером `callback=` для реализации семантики замены.
+Устанавливает `callbacks.function = nil` и `callbacks.next = nil`, отбрасывая всю цепочку коллбэков. После этого GC может собрать все аллоцированные узлы коллбэков.
 
-**Когда использовать:** Редко в прикладном коде. Полезно, когда нужно «отсоединить» future от его нижележащих потребителей — например, при реализации механизма отмены.
-
----
-
-## Композиция futures
-
-Эти комбинаторы позволяют декларативно выражать зависимости между несколькими futures без ручной разводки колбэков.
-
-### Оператор `and`
-
-```nim
-proc `and`*[T, Y](fut1: Future[T], fut2: Future[Y]): Future[void]
-```
-
-**Что делает:** Возвращает новый `Future[void]`, который завершается только тогда, когда завершились **оба** — `fut1` и `fut2`. Если любой из них завершится с ошибкой, возвращаемый future немедленно проваливается с той же ошибкой. Значения `fut1` и `fut2` отбрасываются — используйте `all`, если они нужны.
-
-**Когда использовать:** Когда две независимые операции должны обе завершиться перед продолжением, и их возвращаемые значения не нужны.
-
-```nim
-import std/asyncdispatch
-
-proc main() {.async.} =
-  let a = sleepAsync(200)
-  let b = sleepAsync(300)
-
-  await (a and b)   # ждёт ~300мс (дольшую из двух)
-  echo "Обе завершены"
-
-waitFor main()
-```
+Это низкоуровневый «люк аварийного выхода». Очистка коллбэков на Future, которого собираются `await`ить, приведёт к вечному зависанию ожидания. Используйте с осторожностью.
 
 ---
-
-### Оператор `or`
-
-```nim
-proc `or`*[T, Y](fut1: Future[T], fut2: Future[Y]): Future[void]
-```
-
-**Что делает:** Возвращает новый `Future[void]`, который завершается как только завершится **любой** из двух future — whichever происходит первым. Если первый завершившийся содержит ошибку, возвращаемый future проваливается с этой ошибкой. Значение «победителя» отбрасывается — используйте этот оператор главным образом для паттернов гонки или таймаута.
-
-**Когда использовать:** Для реализации таймаутов (`операция or futureТаймаута`) или для получения первого доступного результата из двух конкурирующих источников.
-
-```nim
-import std/asyncdispatch
-
-proc withTimeout[T](fut: Future[T], ms: int): Future[void] =
-  return fut or sleepAsync(ms)
-
-proc main() {.async.} =
-  let op = sleepAsync(1000)
-  await withTimeout(op, 200)
-  if op.finished:
-    echo "завершилось вовремя"
-  else:
-    echo "истекло время ожидания"
-
-waitFor main()
-```
-
----
-
-### `all`
-
-```nim
-proc all*[T](futs: varargs[Future[T]]): auto
-```
-
-**Что делает:** Возвращает future, который завершается когда завершились **все** futures из `futs`. Тип возвращаемого значения зависит от `T`:
-
-- Если `T` — `void` → возвращает `Future[void]`
-- Если `T` — любой другой тип → возвращает `Future[seq[T]]` с результатами в том же порядке, что входные futures
-
-Если любой из futures проваливается, возвращаемый future немедленно проваливается с той же ошибкой (уже завершённые результаты других futures отбрасываются). Если `futs` пуст, возвращаемый future завершается немедленно.
-
-**Когда использовать:** Когда есть коллекция параллельных однотипных операций и нужны все их результаты.
-
-```nim
-import std/asyncdispatch
-
-proc fetchNumber(n: int): Future[int] {.async.} =
-  await sleepAsync(n * 10)
-  return n * n
-
-proc main() {.async.} =
-  let results = await all(fetchNumber(1), fetchNumber(2), fetchNumber(3))
-  echo results   # @[1, 4, 9]
-
-waitFor main()
-```
-
----
-
-## Запуск без ожидания
-
-### `asyncCheck`
-
-```nim
-proc asyncCheck*[T](future: Future[T])
-```
-
-**Что делает:** Присоединяет к `future` колбэк, который **пробросит** ошибку future как необработанное исключение, если тот завершится с ошибкой. Это делает паттерн «запустил и забыл» безопасным: вместо молчаливого проглатывания ошибок (что делает `discard`) `asyncCheck` гарантирует, что ошибки всплывут и завалят программу, делая баги видимыми.
-
-**Никогда не используйте `discard` на `Future`.** Ошибки отброшенного future исчезают бесследно. Для futures, которые не `await`-ируются, используйте `asyncCheck`.
-
-**Когда использовать:** Когда запускаете async-операцию в фоне, не нуждаетесь в её возвращаемом значении и не хотите её `await`-ировать.
-
-```nim
-import std/asyncdispatch
-
-proc backgroundTask() {.async.} =
-  await sleepAsync(100)
-  echo "фоновая задача завершена"
-  # если здесь возникнет исключение, asyncCheck его пробросит
-
-proc main() {.async.} =
-  asyncCheck backgroundTask()    # запущена в фоне — без await
-  echo "main продолжается немедленно"
-  await sleepAsync(200)          # даём фоновой задаче время завершиться
-
-waitFor main()
-```
-
----
-
-## Утилиты FutureVar
-
-### `clean`
-
-```nim
-proc clean*[T](future: FutureVar[T])
-```
-
-**Что делает:** Сбрасывает флаг `finished` и очищает сохранённую ошибку в `future`, возвращая его в состояние «ожидание». Хранимое значение (если есть) **не** очищается — оно остаётся как есть до перезаписи. Это позволяет переиспользовать тот же объект `FutureVar` для новой операции без нового выделения памяти.
-
-**Когда использовать:** Всегда вызывайте `clean` перед повторным использованием `FutureVar`. Иначе `checkFinished` бросит `FutureError`, потому что future всё ещё находится в состоянии «завершён» от предыдущей операции.
-
-```nim
-import std/asyncdispatch
-
-var fv = newFutureVar[int]("counter")
-
-for i in 1..5:
-  fv.clean()          # сбрасываем для следующего использования
-  fv.complete(i * 10)
-  echo fv.read()      # 10, 20, 30, 40, 50
-```
-
----
-
-## Инфраструктура callSoon
-
-`callSoon` — это мост между `asyncfutures` и циклом событий. Когда future завершается, его колбэки не вызываются синхронно — они *планируются* через `callSoon` для вызова на следующем тике цикла событий. Это предотвращает глубокие стеки вызовов и обеспечивает предсказуемый порядок выполнения.
 
 ### `callSoon`
 
@@ -680,9 +733,21 @@ for i in 1..5:
 proc callSoon*(cbproc: proc() {.gcsafe.})
 ```
 
-**Что делает:** Планирует `cbproc` к вызову «скоро» — либо на следующем тике диспетчера, если цикл событий запущен, либо немедленно, если диспетчер ещё не инициализирован. Эта гарантия отложенного выполнения предотвращает переполнение стека при цепочках async-колбэков.
+Планирует `cbproc` для выполнения «в ближайшее время» — на следующем тике активного диспетчера событий.
 
-**Когда использовать:** Редко в прикладном коде. Полезно, когда нужно отложить выполнение некоторой логики до следующего прохода цикла событий, не привязывая её к конкретному future.
+**Поведение:**
+
+- Если `callSoonProc` равен nil (диспетчер не запущен): вызывает `cbproc()` **синхронно и немедленно**. Это позволяет механизму Future (включая `complete`, `fail` и коллбэки) корректно работать до запуска `asyncdispatch.runForever` / `waitFor`.
+- Если `callSoonProc` установлен: делегирует ему. В `asyncdispatch` это помещает `cbproc` в очередь готовности диспетчера для выполнения в начале следующей итерации цикла событий.
+
+**Потоко-локальность:** `callSoonProc` является `{.threadvar.}`. Каждый поток ОС имеет собственную независимую копию, что позволяет иметь отдельные диспетчеры на поток.
+
+Перенаправление через `callSoonProc` — это то, что отделяет `asyncfutures` от `asyncdispatch`: модуль futures никогда не импортирует диспетчер; вместо этого диспетчер внедряет себя, вызывая `setCallSoonProc` при запуске.
+
+```nim
+callSoon proc() =
+  echo "Это выполнится на следующем тике диспетчера"
+```
 
 ---
 
@@ -692,7 +757,7 @@ proc callSoon*(cbproc: proc() {.gcsafe.})
 proc getCallSoonProc*(): (proc(cbproc: proc()) {.gcsafe.})
 ```
 
-**Что делает:** Возвращает текущую реализацию `callSoon` — процедуру, которую внедрил диспетчер событий. Полезна для отладки или для кастомных async-бэкендов, которым нужно инспектировать планировщик.
+Возвращает текущее значение `callSoonProc` для вызывающего потока. Полезно для сохранения и восстановления планировщика (например, в тестовых фреймворках, которые временно подменяют его на синхронный).
 
 ---
 
@@ -702,128 +767,328 @@ proc getCallSoonProc*(): (proc(cbproc: proc()) {.gcsafe.})
 proc setCallSoonProc*(p: (proc(cbproc: proc()) {.gcsafe.}))
 ```
 
-**Что делает:** Заменяет реализацию `callSoon`. Вызывается внутри `asyncdispatch` при инициализации его цикла событий, соединяя механизм `callSoon` с очередью диспетчера. Прикладной код не должен вызывать это, если только не реализует кастомный async-бэкенд.
+Заменяет реализацию `callSoon` для вызывающего потока. Вызывается `asyncdispatch` при инициализации его цикла событий. Может вызываться тестовым кодом или альтернативными диспетчерами для внедрения собственного планировщика.
+
+**Пример — синхронный тестовый планировщик:**
+
+```nim
+import std/asyncfutures
+import std/deques
+
+var queue: Deque[proc()]
+
+setCallSoonProc proc(cb: proc()) =
+  queue.addLast(cb)
+
+proc runSync() =
+  while queue.len > 0:
+    queue.popFirst()()
+
+let f = newFuture[int]("тест")
+f.addCallback proc() = echo "сработал: ", f.read()
+f.complete(42)
+runSync()   # выводит "сработал: 42"
+```
 
 ---
 
-## Логирование futures
-
-Логирование futures — это отладочный инструмент, отслеживающий, какие futures находятся в процессе выполнения. Включается компиляцией с флагом `-d:futureLogging`.
-
-### `isFutureLoggingEnabled`
+### `and`
 
 ```nim
-const isFutureLoggingEnabled* = defined(futureLogging)
+proc `and`*[T, Y](fut1: Future[T], fut2: Future[Y]): Future[void]
 ```
 
-**Что это:** Константа времени компиляции, равная `true`, когда логирование futures включено. Используйте её для условной компиляции кода, зависящего от логирования.
+Возвращает `Future[void]`, который завершается, когда завершатся **оба** — `fut1` и `fut2`.
+
+**Семантика ошибок:** Если любой Future завершается неудачно, возвращаемый Future немедленно завершается с той же ошибкой (побеждает та, которая провалилась первой). Результат другого Future игнорируется.
+
+**Особенности реализации:**
+
+Каждый из `fut1` и `fut2` получает коллбэк через `future.callback = ...` (**не** `addCallback`). Это означает, что все ранее установленные коллбэки на `fut1` или `fut2` **молча отбрасываются**. Для Future, которые собираетесь комбинировать через `and`, не регистрируйте коллбэки до вызова `and`.
+
+Внутри каждого коллбэка проверка `if not retFuture.finished` защищает от двойного завершения. Это обрабатывает случай, когда оба Future завершаются «одновременно» в одном тике диспетчера — только первый сработавший коллбэк завершит `retFuture`.
+
+Возвращаемый Future **не хранит значений**; для доступа к индивидуальным значениям `fut1` и `fut2` читайте их напрямую после завершения комбинированного Future.
+
+```nim
+let a = newFuture[int]("a")
+let b = newFuture[string]("b")
+
+let оба = a and b
+оба.addCallback proc() =
+  echo a.read(), " ", b.read()   # "1 привет"
+
+a.complete(1)
+b.complete("привет")
+```
 
 ---
 
-### `getFuturesInProgress`
+### `or`
 
 ```nim
-proc getFuturesInProgress*(): var Table[FutureInfo, int]
+proc `or`*[T, Y](fut1: Future[T], fut2: Future[Y]): Future[void]
 ```
 
-**Что делает:** Возвращает изменяемую ссылку на глобальную таблицу, отслеживающую, сколько экземпляров каждого future (с ключом по стеку вызовов и имени процедуры-источника) находятся в ожидании прямо сейчас. Доступно только при компиляции с `-d:futureLogging`.
+Возвращает `Future[void]`, который завершается, как только завершится **любой** из `fut1`, `fut2`.
 
-**Когда использовать:** Для диагностики зависаний или утечки памяти путём инспекции застрявших futures. Таблица отображает `FutureInfo` (стек вызовов + имя процедуры) на количество незавершённых экземпляров.
+**Семантика ошибок:** Если первый завершившийся Future провалился, возвращаемый Future завершается с этой ошибкой. Результат второго Future полностью игнорируется.
+
+**Реализация:**
+
+Внутреннее обобщённое замыкание `cb[X]` привязывается к обоим Future. Защита `if not retFuture.finished` гарантирует, что победит только первое завершение. Как и `and`, использует `future.callback = ...`, что перезаписывает существующие коллбэки.
+
+**Классический паттерн таймаута:**
 
 ```nim
-when defined(futureLogging):
-  import std/asyncfutures
-  let inProgress = getFuturesInProgress()
-  for info, count in inProgress:
+import std/asyncfutures, std/asyncdispatch
+
+proc сТаймаутом[T](fut: Future[T], мс: int): Future[void] =
+  result = fut or sleepAsync(мс)
+```
+
+```nim
+let запрос = httpGetAsync("https://example.com")
+let готово = запрос or sleepAsync(5000)
+await готово
+if запрос.finished:
+  echo запрос.read()
+else:
+  echo "время ожидания истекло"
+```
+
+---
+
+### `all[T]`
+
+```nim
+proc all*[T](futs: varargs[Future[T]]): auto
+```
+
+Возвращает Future, который завершается, когда завершится каждый Future из `futs`.
+
+**Тип возврата зависит от `T`:**
+
+| `T` | Тип возврата | Значение при успехе |
+|---|---|---|
+| `void` | `Future[void]` | (нет) |
+| что-либо ещё | `Future[seq[T]]` | Значения в том же порядке, что и `futs` |
+
+**Пустой ввод:** Возвращает немедленно завершённый Future (`complete()` вызывается до возврата из процедуры).
+
+**Семантика ошибок:** Как только любой Future из `futs` провалится, возвращаемый Future немедленно завершается с этой ошибкой. Уже вычисленные значения в `retValues` отбрасываются.
+
+**Особенности реализации (ветка не-void):**
+
+Проблема захвата индекса: наивное `for i, fut in futs: fut.addCallback proc() = retValues[i] = ...` приведёт к тому, что все коллбэки замкнутся на **одну и ту же** переменную цикла `i` (её конечное значение). Модуль решает это вложенной процедурой `setCallback(i: int)`:
+
+```nim
+for i, fut in futs:
+  proc setCallback(i: int) =
+    fut.addCallback proc(f: Future[T]) =
+      retValues[i] = f.read()   # i теперь свежая копия для каждой итерации
+      ...
+  setCallback(i)
+```
+
+Каждый вызов `setCallback` создаёт новый стековый фрейм со своим `i`, так что каждый коллбэк замыкается на разное значение.
+
+Счётчик `completedFutures` увеличивается внутри каждого коллбэка. Когда он достигает `len(retValues)`, вызывается `retFuture.complete(retValues)`.
+
+```nim
+let f1 = newFuture[int]("f1")
+let f2 = newFuture[int]("f2")
+let f3 = newFuture[int]("f3")
+
+let агрегат = all(f1, f2, f3)   # Future[seq[int]]
+агрегат.addCallback proc() =
+  echo агрегат.read()   # @[10, 20, 30]
+
+f3.complete(30)
+f1.complete(10)
+f2.complete(20)          # последний запускает завершение
+```
+
+---
+
+### `getFuturesInProgress` *(только при futureLogging)*
+
+```nim
+when isFutureLoggingEnabled:
+  proc getFuturesInProgress*(): var Table[FutureInfo, int]
+```
+
+Возвращает изменяемую ссылку на потоко-локальную таблицу `futuresInProgress`. Каждая запись отображает `FutureInfo` (трассировка при создании + `fromProc`) на количество в данный момент активных Future с такой сигнатурой.
+
+Увеличивается `logFutureStart` (вызываемым из `newFuture`/`newFutureVar`) и уменьшается `logFutureFinish` (вызываемым из `complete`/`fail`). Счётчик, который неограниченно растёт, указывает на Future, который никогда не завершается — утечку Future.
+
+```nim
+# Скомпилировать с: nim c -d:futureLogging myapp.nim
+when isFutureLoggingEnabled:
+  import std/tables
+  for info, count in getFuturesInProgress():
     if count > 0:
-      echo info.fromProc, ": ", count, " в ожидании"
+      echo "[УТЕЧКА] ", info.fromProc, " имеет ", count, " незавершённых Future"
+      for entry in info.stackTrace:
+        echo "  ", entry.filename, "(", entry.line, ") ", entry.procname
 ```
 
 ---
 
-## Полный практический пример
+## Диагностика и отладка
 
-Самодостаточный пример, демонстрирующий создание, композицию и обработку ошибок futures на нескольких уровнях:
+### Флаги компиляции
+
+| Флаг | Эффект |
+|---|---|
+| *(нет / debug)* | `checkFinished` активен; поля `stackTrace`, `id`, `fromProc` присутствуют; полные асинхронные трассировки добавляются. |
+| `-d:release` | `checkFinished` удалён; debug-поля отсутствуют; `injectStacktrace` — пустышка; максимальная производительность. |
+| `-d:futureLogging` | Активирует отслеживание через таблицу `FutureInfo`. Можно комбинировать с `-d:release`. |
+| `-d:nimStackTraceOverride` | Включает разрешение внешних отладочных символов в трассировках, форматируемых `$`. |
+| `-d:nimPreviewSlimSystem` | Требует явного импорта `std/objectdollar` (для `StackTraceEntry`) и `std/assertions`. |
+
+### Внедрение асинхронной трассировки
+
+Когда ошибка провалившегося Future перевыбрасывается через `read()`, модуль обогащает сообщение исключения секцией **асинхронной трассировки** в не-release сборках:
+
+```
+IOError: соединение отклонено
+Async traceback:
+  mymodule.nim(42) получитьДанные
+  mymodule.nim(78) обработатьЗапрос
+Exception message: соединение отклонено
+```
+
+Процедура `injectStacktrace`:
+
+1. Проверяет, присутствует ли уже заголовок `"\nAsync traceback:\n"` в сообщении (идемпотентность — повторный вызов `read()` на одном провалившемся Future не дублирует секцию).
+2. Обрезает сообщение до оригинального (предшествующего внедрению) текста.
+3. Вызывает `$` на `getStackTraceEntries(future.error)` для форматирования трассировки, что:
+   - Применяет `addDebuggingInfo`, если установлен `-d:nimStackTraceOverride`.
+   - Фильтрует дублирующиеся записи через `seenEntries` (`HashSet`).
+   - Фильтрует внутренние фреймы Nim async через `isInternal` (записи из `asyncdispatch.nim`, `asyncfutures.nim`, `threadimpl.nim`).
+   - Пропускает записи с отрицательными номерами строк (маркеры перевыброса).
+4. Добавляет форматированную трассировку и подвал.
+
+### Форматирование трассировки стека
+
+Оператор `$` над `seq[StackTraceEntry]` экспортируется и форматирует трассировку как многострочную строку. Каждая строка имеет вид:
+
+```
+  filename.nim(номерСтроки) имяПроцедуры
+```
+
+Внутренние фреймы async автоматически исключаются, так что трассировка показывает только точки вызова на уровне приложения.
+
+---
+
+## Потокобезопасность
+
+`asyncfutures` спроектирован для модели **однопоточного цикла событий**. Ключевые аспекты потокобезопасности:
+
+- **`callSoonProc` является `{.threadvar.}`** — каждый поток ОС имеет независимый планировщик. Два потока могут каждый иметь свой диспетчер, не мешая друг другу.
+- **`currentID` — обычная переменная уровня модуля** (не threadvar, присутствует только в не-release сборках). В многопоточной программе с конкурентным созданием Future в не-release сборках этот счётчик не является потокобезопасным. Это приемлемо, поскольку он предназначен только для отладки.
+- **`futuresInProgress` является `{.threadvar.}`** — таблица обнаружения утечек является потоко-локальной.
+- **Доступ к одному и тому же `Future[T]` из нескольких потоков одновременно не является безопасным.** В `FutureBase` нет блокировок или атомарных операций. Прагмы `{.gcsafe.}` на коллбэках утверждают безопасность GC, а не свободу от гонок данных. Храните Future в том потоке, в котором они были созданы.
+
+---
+
+## Полный пример
 
 ```nim
-import std/asyncdispatch
+import std/asyncfutures
 
-# Низкий уровень: вручную создаём и разрешаем future
-proc resolveAfterDelay(value: int, ms: int): Future[int] =
-  var fut = newFuture[int]("resolveAfterDelay")
-  addTimer(ms, oneshot = true, cb = proc(fd: AsyncFD): bool =
-    fut.complete(value)
-    return true
-  )
-  return fut
+# ── 1. Базовый жизненный цикл Future ────────────────────────────────────────
+block базовыйЦикл:
+  let f = newFuture[int]("базовыйЦикл")
+  assert not f.finished
 
-# Средний уровень: комбинируем futures
-proc sumTwoAsync(a, b: int): Future[int] {.async.} =
-  # Запускаем оба параллельно через `all`
-  let results = await all(
-    resolveAfterDelay(a, 100),
-    resolveAfterDelay(b, 150)
-  )
-  return results[0] + results[1]
+  f.addCallback proc(fut: Future[int]) =
+    echo "значение = ", fut.read()   # значение = 99
 
-# Путь ошибки
-proc mayFail(shouldFail: bool): Future[string] =
-  result = newFuture[string]("mayFail")
-  if shouldFail:
-    result.fail(newException(ValueError, "намеренный сбой"))
-  else:
-    result.complete("успех!")
+  f.complete(99)
+  assert f.finished and not f.failed
 
-# Верхний уровень
-proc main() {.async.} =
-  # Параллельное вычисление
-  let sum = await sumTwoAsync(10, 32)
-  echo "10 + 32 = ", sum   # 42
+# ── 2. Провал и инспекция ошибки ────────────────────────────────────────────
+block путьОшибки:
+  let f = newFuture[string]("путьОшибки")
+  f.fail(newException(IOError, "диск заполнен"))
 
-  # Обработка ошибок
-  let f = mayFail(true)
-  echo "завершился с ошибкой? ", f.failed   # true
-  let err = f.readError()
-  echo "ошибка: ", err.msg     # "намеренный сбой"
+  assert f.failed
+  assert f.error of IOError
+  assert f.readError().msg == "диск заполнен"
 
-  # Гонка через or (таймаут)
-  let winner = resolveAfterDelay(1, 50) or resolveAfterDelay(2, 200)
-  await winner
-  echo "гонка завершена"
+  try:
+    discard f.read()
+  except IOError as e:
+    echo "поймано: ", e.msg    # поймано: диск заполнен
 
-  # Фоновая задача без ожидания
-  asyncCheck (proc() {.async.} =
-    await sleepAsync(10)
-    echo "фон завершён"
-  )()
-  await sleepAsync(50)   # даём фоновой задаче поработать
+# ── 3. FutureVar — переиспользуемый Future ──────────────────────────────────
+block паттернПовторногоИспользования:
+  var fv = newFutureVar[seq[byte]]("паттернПовторногоИспользования")
+  for chunk in 1..3:
+    fv.clean()
+    fv.mget() = @[byte(chunk * 10)]
+    fv.complete()
+    echo fv.read()   # @[10], @[20], @[30]
 
-waitFor main()
+# ── 4. Параллельная композиция: and ─────────────────────────────────────────
+block иКомпозиция:
+  let a = newFuture[int]("a")
+  let b = newFuture[float]("b")
+  let оба = a and b
+  оба.addCallback proc() =
+    echo a.read(), " ", b.read()   # 7 3.14
+  a.complete(7)
+  b.complete(3.14)
+
+# ── 5. Гонка: or ────────────────────────────────────────────────────────────
+block гонка:
+  let быстрый = newFuture[void]("быстрый")
+  let медленный = newFuture[void]("медленный")
+  let гонка = быстрый or медленный
+  гонка.addCallback proc() = echo "победитель!"
+  быстрый.complete()   # "победитель!" срабатывает; медленный игнорируется
+
+# ── 6. Агрегация: all ───────────────────────────────────────────────────────
+block агрегация:
+  let задачи = [newFuture[int]("з0"),
+                newFuture[int]("з1"),
+                newFuture[int]("з2")]
+  let агрегат = all(задачи)
+  агрегат.addCallback proc() =
+    echo агрегат.read()   # @[100, 200, 300]
+  задачи[2].complete(300)
+  задачи[0].complete(100)
+  задачи[1].complete(200)
+
+# ── 7. asyncCheck — выброс ошибок из отброшенных Future ─────────────────────
+block проверкаОшибок:
+  proc рискованнаяОперация(): Future[void] =
+    result = newFuture[void]("рискованнаяОперация")
+    result.fail(newException(ValueError, "неверный ввод"))
+
+  asyncCheck рискованнаяОперация()
+  # Без запущенного диспетчера коллбэк срабатывает немедленно.
+  # В реальной async-программе ValueError распространился бы до диспетчера.
+
+# ── 8. Пользовательский callSoon для тестирования ───────────────────────────
+block пользовательскийПланировщик:
+  import std/deques
+  var очередь: Deque[proc()]
+  setCallSoonProc proc(cb: proc()) = очередь.addLast(cb)
+
+  let f = newFuture[int]("пользовательский")
+  f.addCallback proc() = echo "запланировано: ", f.read()
+  f.complete(42)          # коллбэк поставлен в очередь, но ещё не вызван
+
+  while очередь.len > 0:
+    очередь.popFirst()()  # выводит "запланировано: 42"
+
+  # Восстановить дефолтный (nil → немедленное выполнение)
+  setCallSoonProc nil
 ```
 
 ---
 
-## Шпаргалка
-
-| Задача | API |
-|---|---|
-| Создать новый future | `newFuture[T]("имяПроцедуры")` |
-| Создать переиспользуемый future | `newFutureVar[T]("имяПроцедуры")` |
-| Завершить успешно (со значением) | `future.complete(value)` |
-| Завершить успешно (void) | `future.complete()` |
-| Завершить с ошибкой | `future.fail(exception)` |
-| Прочитать результат | `future.read()` |
-| Прочитать ошибку | `future.readError()` |
-| Изменяемый доступ (только FutureVar) | `mget(futureVar)` |
-| Проверить, завершён ли (успех или ошибка) | `future.finished` |
-| Проверить, завершился ли с ошибкой | `future.failed` |
-| Реагировать на завершение (типизированно) | `future.addCallback proc(f: Future[T]) = ...` |
-| Реагировать на завершение (без типа) | `future.addCallback proc() = ...` |
-| Заменить все колбэки | `future.callback = proc() = ...` |
-| Удалить все колбэки | `future.clearCallbacks()` |
-| Ждать оба | `fut1 and fut2` |
-| Ждать любой из двух | `fut1 or fut2` |
-| Ждать все (с результатами) | `await all(fut1, fut2, fut3)` |
-| Запустить без ожидания (безопасно) | `asyncCheck future` |
-| Сбросить FutureVar для повторного использования | `futureVar.clean()` |
-| Отложить выполнение до следующего тика | `callSoon(proc() = ...)` |
+*Основано на исходном коде `asyncfutures.nim` из стандартной библиотеки Nim
