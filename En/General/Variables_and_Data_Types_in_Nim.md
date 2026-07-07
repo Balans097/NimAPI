@@ -5,11 +5,6 @@ Nim has a strict yet flexible type system and memory management model. For devel
 
 Below is a detailed explanation of the differences between the various ways of declaring variables, object types, pointers, and other related concepts ("etc.").
 
-All code in this reference follows a single consistent style:
-- procedure calls use the functional (prefix) form: `len(A)`, `startsWith(s, x)`, `add(seq, x)`, `close(f)`; the dot is used **only** for accessing struct/object fields (`p.x`) and for indexing (`a[0]`);
-- the exception is `echo`, which is always written as `echo "text"`, without parentheses around the argument;
-- when two or more `let`/`var`/`const` are declared in a row, the block form is used (the keyword once, followed by each variable on an indented line below);
-- `import` is written comma-separated on one line, or using the grouped `std/[...]` syntax when the imports are logically related.
 
 ---
 
