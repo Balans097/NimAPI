@@ -1,717 +1,820 @@
-# Справочник модуля `std/times` (Nim)
+- [x] # times — справочник модуля
 
-> Модуль `times` содержит процедуры и типы для работы со временем с использованием
-> [пролептического григорианского календаря](https://en.wikipedia.org/wiki/Proleptic_Gregorian_calendar).
-> Поддерживает разрешение до наносекунд, однако фактическая точность зависит от платформы
-> (JavaScript ограничен миллисекундами).
+> **Импорт:** `import std/times`
+> **Область применения:** работа с датой и временем по пролептическому григорианскому календарю — точки во времени, длительности, разбор времени на компоненты, форматирование/парсинг строк, часовые пояса.
+
+Модуль решает четыре в целом независимые задачи, вокруг которых он и построен:
+хранение "сырой" точки во времени (`Time`), представление времени в виде набора
+человекочитаемых полей (`DateTime`), выражение длительности либо как фиксированного
+числа секунд (`Duration`), либо как календарного интервала ("1 год и 2 дня",
+`TimeInterval`), и, наконец, перевод между часовыми поясами через объекты `Timezone`.
+Общая конвенция модуля: там, где операция допускает и точную (`Duration`), и
+календарную (`TimeInterval`) трактовку, для обеих есть отдельный набор
+перегруженных операторов `+`/`-`, а какую из них использовать — решает сам
+вызывающий код, в зависимости от того, нужна ли ему точность в секундах или
+устойчивость к переходам через дни/месяцы/года.
 
 ---
 
 ## Оглавление
 
-1. [Типы данных](#типы-данных)
-2. [Константы](#константы)
-3. [Вспомогательные функции](#вспомогательные-функции)
-4. [Duration — фиксированная длительность](#duration--фиксированная-длительность)
-5. [Time — момент времени](#time--момент-времени)
-6. [DateTime — дата и время](#datetime--дата-и-время)
-7. [Timezone — часовые пояса](#timezone--часовые-пояса)
-8. [Форматирование и парсинг](#форматирование-и-парсинг)
-9. [TimeInterval — календарный интервал](#timeinterval--календарный-интервал)
-10. [Удобные конструкторы интервалов](#удобные-конструкторы-интервалов)
-11. [Системное время и бенчмаркинг](#системное-время-и-бенчмаркинг)
-12. [Паттерны форматирования](#паттерны-форматирования)
-13. [Duration vs TimeInterval](#duration-vs-timeinterval)
+I. [Основные типы модуля](#основные-типы-модуля)
+   1. [`Time`](#time)
+   2. [`DateTime`](#datetime)
+   3. [`Duration`](#duration)
+   4. [`TimeInterval`](#timeinterval)
+   5. [`Timezone` и `ZonedTime`](#timezone-и-zonedtime)
+
+II. [Duration — фиксированные интервалы времени](#duration--фиксированные-интервалы-времени)
+   1. [`initDuration` и `DurationZero`](#initduration-и-durationzero)
+   2. [Извлечение величины: `inWeeks`, `inDays`, `inHours`, `inMinutes`, `inSeconds`, `inMilliseconds`, `inMicroseconds`, `inNanoseconds`](#извлечение-величины)
+   3. [`toParts` (Duration)](#toparts-duration)
+   4. [Арифметика и сравнение `Duration`](#арифметика-и-сравнение-duration)
+   5. [`high`, `low`, `abs` (Duration)](#high-low-abs-duration)
+   6. [`$` (Duration)](#-duration)
+
+III. [Time — точка во времени](#time--точка-во-времени)
+   1. [`initTime` и `nanosecond`](#inittime-и-nanosecond)
+   2. [`fromUnix` / `toUnix`](#fromunix--tounix)
+   3. [`fromWinTime` / `toWinTime`](#fromwintime--towintime)
+   4. [`getTime`](#gettime)
+   5. [Арифметика и сравнение `Time`](#арифметика-и-сравнение-time)
+   6. [`high`, `low` (Time)](#high-low-time)
+   7. [`$` (Time)](#-time)
+
+IV. [DateTime — время, разобранное на поля](#datetime--время-разобранное-на-поля)
+   1. [Поля-аксессоры DateTime](#поля-аксессоры-datetime)
+   2. [`dateTime` и устаревшие `initDateTime`](#datetime-и-устаревшие-initdatetime)
+   3. [`toTime`](#totime)
+   4. [`isLeapDay`](#isleapday)
+   5. [Арифметика и сравнение `DateTime` через `Duration`](#арифметика-и-сравнение-datetime-через-duration)
+   6. [`getDateStr` / `getClockStr`](#getdatestr--getclockstr)
+   7. [`$` (DateTime)](#-datetime)
+
+V. [Часовые пояса](#часовые-пояса)
+   1. [`Timezone`, `newTimezone`](#timezone-newtimezone)
+   2. [`utc` / `local` (получение зоны и перевод в неё)](#utc--local)
+   3. [`inZone`](#inzone)
+   4. [`name`, `$`, `==` для `Timezone`](#name---для-timezone)
+   5. [`now`](#now)
+
+VI. [Форматирование и парсинг дат](#форматирование-и-парсинг-дат)
+   1. [Синтаксис формат-строк](#синтаксис-формат-строк)
+   2. [`initTimeFormat` и `TimeFormat`](#inittimeformat-и-timeformat)
+   3. [`format`](#format)
+   4. [`parse` / `parseTime`](#parse--parsetime)
+   5. [`DateTimeLocale`](#datetimelocale)
+
+VII. [TimeInterval — календарные интервалы](#timeinterval--календарные-интервалы)
+   1. [`initTimeInterval`](#inittimeinterval)
+   2. [Конструкторы отдельных единиц: `nanoseconds` … `years`](#конструкторы-отдельных-единиц)
+   3. [Арифметика `TimeInterval`](#арифметика-timeinterval)
+   4. [`toParts` и `$` (TimeInterval)](#toparts-и--timeinterval)
+   5. [Арифметика `DateTime`/`Time` с `TimeInterval`](#арифметика-datetimetime-с-timeinterval)
+   6. [`between`](#between)
+
+VIII. [Календарные вычисления и ISO-недели](#календарные-вычисления-и-iso-недели)
+   1. [`isLeapYear`, `getDaysInMonth`, `getDaysInYear`](#isleapyear-getdaysinmonth-getdaysinyear)
+   2. [`getDayOfYear`, `getDayOfWeek`](#getdayofyear-getdayofweek)
+   3. [`IsoYear`, `getWeeksInIsoYear`, `getIsoWeekAndYear`](#isoyear-getweeksinisoyear-getisoweekandyear)
+   4. [`initDateTime` по ISO-неделе](#initdatetime-по-iso-неделе)
+
+IX. [Прочие процедуры](#прочие-процедуры)
+   1. [`convert`](#convert)
+   2. [`epochTime`](#epochtime)
+   3. [`cpuTime`](#cputime)
+
+X. [Устаревшие сеттеры полей DateTime](#устаревшие-сеттеры-полей-datetime)
+
+XI. [Практические рецепты](#практические-рецепты)
+   1. [Замер длительности операции](#1-замер-длительности-операции)
+   2. [Разбор и форматирование дат из внешнего источника](#2-разбор-и-форматирование-дат-из-внешнего-источника)
+   3. [Человекочитаемый возраст/стаж](#3-человекочитаемый-возрастстаж)
+   4. [Перевод отметки времени между часовыми поясами](#4-перевод-отметки-времени-между-часовыми-поясами)
+   5. [Планировщик "раз в N дней"](#5-планировщик-раз-в-n-дней)
+
+XII. [Краткая таблица](#краткая-таблица)
+
+XIII. [Сводка: какую процедуру выбрать](#сводка-какую-процедуру-выбрать)
 
 ---
 
-## Типы данных
-
-### `Month`
-Перечисление месяцев года. Нумерация начинается с 1 (`ord(mJan) == 1`).
-
-```nim
-mJan, mFeb, mMar, mApr, mMay, mJun,
-mJul, mAug, mSep, mOct, mNov, mDec
-```
-
-### `WeekDay`
-Перечисление дней недели (от понедельника до воскресенья).
-
-```nim
-dMon, dTue, dWed, dThu, dFri, dSat, dSun
-```
+## Основные типы модуля
 
 ### `Time`
-Представляет точку во времени в виде секунд (Unix-время) и наносекунд.
 
 ```nim
-let t = getTime()
+Time* = object
+  seconds: int64
+  nanosecond: NanosecondRange
 ```
+
+**Функция.** `Time` — это "сырая" точка во времени: секунды от эпохи Unix
+(1970-01-01T00:00:00 UTC) плюс наносекундная добавка. У неё нет ни часового
+пояса, ни разбиения на год/месяц/день — это просто число с наносекундной
+точностью, которое одинаково для всех наблюдателей на Земле. Все поля
+приватны: наружу `Time` показывает себя только через процедуры `toUnix`,
+`nanosecond`, арифметику и сравнение.
+
+- **Разбор реализации.** Хранение в виде пары (секунды, наносекунды), а не
+  одного числа наносекунд, выбрано ради диапазона: `int64` наносекунд
+  переполнился бы уже около 2262 года, а пара (секунды: int64, наносекунды:
+  0..999999999) даёт тот же диапазон, что и `time_t`, с полной наносекундной
+  точностью внутри каждой секунды.
+
+---
 
 ### `DateTime`
-Представляет время в разбивке по составляющим (год, месяц, день, час, минута, секунда, наносекунда, часовой пояс и др.).
 
 ```nim
-let dt = now()
-echo dt.year, "-", dt.month.ord, "-", dt.monthday
+DateTime* = object of RootObj
+  nanosecond: NanosecondRange
+  second: SecondRange
+  minute: MinuteRange
+  hour: HourRange
+  monthdayZero: int
+  monthZero: int
+  year: int
+  weekday: WeekDay
+  yearday: YeardayRange
+  isDst: bool
+  timezone: Timezone
+  utcOffset: int
 ```
+
+**Функция.** `DateTime` представляет тот же момент времени, что и `Time`, но
+уже разложенный на календарные поля (год, месяц, день, час...) в конкретном
+часовом поясе. В отличие от `Time`, значение `DateTime` без явно указанного
+часового пояса не имеет смысла — поэтому у типа есть поле `timezone`, а
+получить "просто дату" без пояса нельзя. Значение по умолчанию (`default(DateTime)`)
+считается неинициализированным — большинство процедур модуля проверяют это
+через внутренний `assertDateTimeInitialized` и подают ассерт при попытке
+прочитать поля пустого `DateTime`.
+
+- **Список параметров/полей** (только для чтения, через одноимённые процедуры-аксессоры):
+  - `nanosecond`, `second`, `minute`, `hour` — время суток;
+  - `monthday`, `month`, `year` — календарная дата;
+  - `weekday`, `yearday` — производные поля, вычисляются автоматически;
+  - `isDst` — действует ли в этот момент летнее время;
+  - `timezone` — часовой пояс, в котором представлено значение;
+  - `utcOffset` — смещение от UTC в секундах (со знаком, обратным принятому
+    в строковых офсетах вида `+01:00`).
+
+---
 
 ### `Duration`
-Фиксированная длительность, хранящаяся как секунды и наносекунды. Всегда нормализована.
 
 ```nim
-let d = initDuration(hours = 2, minutes = 30)
+Duration* = object
+  seconds: int64
+  nanosecond: NanosecondRange
 ```
+
+**Функция.** `Duration` — фиксированная длительность: столько-то секунд и
+наносекунд, всегда нормализованная (`initDuration(hours = 1)` и
+`initDuration(minutes = 60)` дают одинаковое значение). Сутки для `Duration`
+всегда равны ровно 86400 секундам. Это делает арифметику с `Duration`
+дешёвой (просто сложение/вычитание целых чисел) и предсказуемой, поэтому
+модуль рекомендует использовать именно `Duration`, если не нужна поддержка
+месяцев и лет.
+
+---
 
 ### `TimeInterval`
-Нефиксированная длительность в календарных единицах (поддерживает годы, месяцы и т.д.).
 
 ```nim
-let ti = initTimeInterval(years = 1, months = 2)
+TimeInterval* = object
+  nanoseconds*: int
+  microseconds*: int
+  milliseconds*: int
+  seconds*: int
+  minutes*: int
+  hours*: int
+  days*: int
+  weeks*: int
+  months*: int
+  years*: int
 ```
 
-### `Timezone`
-Интерфейс часового пояса для работы с `DateTime`.
-
-### `ZonedTime`
-Вспомогательный объект для реализации часового пояса. Содержит `time`, `utcOffset`, `isDst`.
-
-### `TimeFormat`
-Скомпилированный формат для парсинга и форматирования времени.
-
-### `DateTimeLocale`
-Локализованные названия месяцев и дней недели для форматирования.
-
-### Диапазонные типы
-
-| Тип | Диапазон |
-|---|---|
-| `MonthdayRange` | 1..31 |
-| `HourRange` | 0..23 |
-| `MinuteRange` | 0..59 |
-| `SecondRange` | 0..60 (60 — секунда координации) |
-| `NanosecondRange` | 0..999_999_999 |
-| `YeardayRange` | 0..365 |
-| `IsoWeekRange` | 1..53 |
-| `IsoYear` | distinct int |
+**Функция.** `TimeInterval` — календарный интервал вроде "1 год и 2 дня":
+каждая единица хранится отдельным полем и **не** нормализуется (даже секунды
+и миллисекунды не переносятся друг в друга), потому что единицы вроде года
+или месяца в принципе не имеют фиксированной длины в секундах (год бывает
+365 или 366 дней). Из-за этого арифметика с `TimeInterval` требует
+информации о часовом поясе и может быть заметно медленнее, чем с `Duration`.
+Разница особенно заметна на переходах летнего времени: между
+`2018-03-25T12:00+02:00` и `2018-03-26T12:00+01:00` прошли календарные
+"ровно одни сутки" (`TimeInterval`), но фактически 25 часов = 90000 секунд
+(`Duration`), потому что где-то между ними сместился офсет.
 
 ---
 
-## Константы
-
-### `DurationZero`
-Нулевая длительность — удобна для сравнений.
+### `Timezone` и `ZonedTime`
 
 ```nim
-doAssert initDuration(seconds = 1) > DurationZero
-doAssert initDuration(seconds = 0) == DurationZero
+Timezone* = ref object
+  zonedTimeFromTimeImpl: proc (x: Time): ZonedTime
+  zonedTimeFromAdjTimeImpl: proc (x: Time): ZonedTime
+  name: string
+
+ZonedTime* = object
+  time*: Time
+  utcOffset*: int
+  isDst*: bool
 ```
 
-### `DefaultLocale`
-Локаль по умолчанию (английские названия месяцев и дней).
+**Функция.** `Timezone` — интерфейс часового пояса: пара функций-конвертеров
+(`Time -> ZonedTime` и "локальное время" -> `ZonedTime`) плюс имя.
+Сам модуль `times` поставляет только реализации для UTC и системного
+локального пояса — поддержка произвольных таймзон (базы IANA tzdata и т.п.)
+реализуется сторонними библиотеками через `newTimezone`. `ZonedTime` —
+вспомогательный тип: точка времени плюс UTC-офсет и флаг летнего времени,
+используется только при реализации таймзон.
 
 ---
+## Duration — фиксированные интервалы времени
 
-## Вспомогательные функции
-
-### `convert`
-```nim
-proc convert[T: SomeInteger](unitFrom, unitTo: FixedTimeUnit, quantity: T): T
-```
-Конвертирует количество единиц времени из одного типа в другой. Результат может быть усечён (целочисленное деление).
+### `initDuration` и `DurationZero`
 
 ```nim
-doAssert convert(Days, Hours, 2) == 48
-doAssert convert(Days, Weeks, 13) == 1    # усечение
-doAssert convert(Seconds, Milliseconds, -1) == -1000
+const DurationZero* = Duration()
+
+proc initDuration*(nanoseconds, microseconds, milliseconds,
+                   seconds, minutes, hours, days, weeks: int64 = 0): Duration
 ```
 
----
+**Функция.** Создаёт `Duration` из произвольной комбинации единиц — все они
+складываются и нормализуются в одну пару (секунды, наносекунды).
+`DurationZero` — готовая нулевая длительность, удобна как база для сравнений.
 
-### `isLeapYear`
-```nim
-proc isLeapYear(year: int): bool
-```
-Возвращает `true`, если год является високосным.
+- **Параметры:**
+  - `nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`,
+    `hours`, `days`, `weeks` — каждая единица необязательна (по умолчанию 0),
+    может быть отрицательной; итог нормализуется.
 
-```nim
-doAssert isLeapYear(2000)       # true — делится на 400
-doAssert not isLeapYear(1900)   # false — делится на 100, но не на 400
-doAssert isLeapYear(2024)       # true
-```
-
----
-
-### `getDaysInMonth`
-```nim
-proc getDaysInMonth(month: Month, year: int): int
-```
-Возвращает количество дней в указанном месяце с учётом високосного года.
+**Примеры:**
 
 ```nim
-doAssert getDaysInMonth(mFeb, 2000) == 29   # 2000 — високосный
-doAssert getDaysInMonth(mFeb, 2001) == 28
-doAssert getDaysInMonth(mJan, 2024) == 31
+let
+  dur1 = initDuration(seconds = 1)
+  dur2 = initDuration(minutes = 60)
+doAssert dur1 > DurationZero
+doAssert dur2 == initDuration(hours = 1)
 ```
 
 ---
 
-### `getDayOfYear`
-```nim
-proc getDayOfYear(monthday: MonthdayRange, month: Month, year: int): YeardayRange
-```
-Возвращает порядковый номер дня в году (начиная с 0).
+### Извлечение величины
 
 ```nim
-doAssert getDayOfYear(1, mJan, 2000) == 0
-doAssert getDayOfYear(10, mJan, 2000) == 9
-doAssert getDayOfYear(10, mFeb, 2000) == 40
-```
-
----
-
-### `getDayOfWeek`
-```nim
-proc getDayOfWeek(monthday: MonthdayRange, month: Month, year: int): WeekDay
-```
-Возвращает день недели для указанной даты.
-
-```nim
-doAssert getDayOfWeek(13, mJun, 1990) == dWed
-doAssert $getDayOfWeek(13, mJun, 1990) == "Wednesday"
+proc inWeeks*(dur: Duration): int64
+proc inDays*(dur: Duration): int64
+proc inHours*(dur: Duration): int64
+proc inMinutes*(dur: Duration): int64
+proc inSeconds*(dur: Duration): int64
+proc inMilliseconds*(dur: Duration): int64
+proc inMicroseconds*(dur: Duration): int64
+proc inNanoseconds*(dur: Duration): int64
 ```
 
----
+**Функция.** Каждая процедура выражает `Duration` целиком в указанной
+единице — с усечением (`div`), а не округлением, поэтому `inHours` для
+"1 час 59 минут" вернёт `1`, а не `2`.
 
-### `getDaysInYear`
-```nim
-proc getDaysInYear(year: int): int
-```
-Возвращает количество дней в году (365 или 366).
+- **Параметры:** `dur` — длительность, которую нужно выразить в единице,
+  указанной в имени процедуры.
+
+**Примеры:**
 
 ```nim
-doAssert getDaysInYear(2000) == 366
-doAssert getDaysInYear(2001) == 365
+let dur = initDuration(hours = 1, minutes = 30)
+doAssert inMinutes(dur) == 90
+doAssert inHours(dur) == 1          # усечение, а не округление
+doAssert inSeconds(initDuration(seconds = -1)) == -1
 ```
 
 ---
 
-### `getWeeksInIsoYear`
-```nim
-proc getWeeksInIsoYear(y: IsoYear): IsoWeekRange
-```
-Возвращает количество ISO-недель в году (52 или 53).
+### `toParts` (Duration)
 
 ```nim
-assert getWeeksInIsoYear(IsoYear(2019)) == 52
-assert getWeeksInIsoYear(IsoYear(2020)) == 53
+proc toParts*(dur: Duration): DurationParts
 ```
 
----
+**Функция.** Раскладывает `Duration` на массив по всем восьми фиксированным
+единицам (`Nanoseconds`..`Weeks`), каждая — "остаток" после вычитания более
+крупных единиц. Удобно для человекочитаемого вывода вида "1 неделя, 2 дня,
+3 часа" без ручных `div`/`mod`.
 
-### `getIsoWeekAndYear`
+- **Параметры:** `dur` — исходная длительность.
+
+**Пример:**
+
 ```nim
-proc getIsoWeekAndYear(dt: DateTime): tuple[isoweek: IsoWeekRange, isoyear: IsoYear]
-```
-Возвращает ISO 8601 номер недели и год для `DateTime`.
-
-> **Внимание:** ISO-год может отличаться от обычного года для дат с 29 декабря по 3 января.
-
-```nim
-let (week, year) = getIsoWeekAndYear(initDateTime(21, mApr, 2018, 0, 0, 0))
-assert week == 16 and year == IsoYear(2018)
-
-let (w2, y2) = getIsoWeekAndYear(initDateTime(30, mDec, 2019, 0, 0, 0))
-assert w2 == 1 and y2 == IsoYear(2020)  # Относится к следующему году!
+let dur = initDuration(weeks = 1, days = 2, hours = 3)
+let parts = toParts(dur)
+doAssert parts[Weeks] == 1
+doAssert parts[Days] == 2
+doAssert parts[Hours] == 3
 ```
 
 ---
 
-## Duration — фиксированная длительность
+### Арифметика и сравнение `Duration`
 
-`Duration` хранит точное количество времени в виде секунд и наносекунд. Всегда нормализована.
-
-### `initDuration`
 ```nim
-proc initDuration(nanoseconds, microseconds, milliseconds,
-                  seconds, minutes, hours, days, weeks: int64 = 0): Duration
+proc `+`*(a, b: Duration): Duration
+proc `-`*(a, b: Duration): Duration
+proc `-`*(a: Duration): Duration
+proc `<`*(a, b: Duration): bool
+proc `<=`*(a, b: Duration): bool
+proc `==`*(a, b: Duration): bool
+proc `*`*(a: int64, b: Duration): Duration
+proc `*`*(a: Duration, b: int64): Duration
+proc `div`*(a: Duration, b: int64): Duration
+proc `+=`*(d1: var Duration, d2: Duration)
+proc `-=`*(dt: var Duration, ti: Duration)
+proc `*=`*(a: var Duration, b: int)
 ```
-Создаёт новый `Duration`. Все параметры необязательны и по умолчанию равны 0.
+
+**Функция.** Полный набор арифметических и сравнивающих операторов: сложение
+и вычитание двух длительностей, унарный минус (разворот знака), умножение и
+целочисленное деление на скаляр, сравнения по величине, а также
+модифицирующие варианты `+=`/`-=`/`*=`. Все операции работают через
+нормализацию пары (секунды, наносекунды), поэтому переполнение наносекунд
+в одну сторону или другую всегда корректно переносится в секунды.
+
+- **Разбор реализации.** Сложение/вычитание сводятся к одной внутренней
+  функции нормализации: складываются (или вычитаются) секунды и наносекунды
+  по отдельности, а затем наносекундная часть приводится в диапазон
+  `0..999999999` с переносом "лишней" секунды — как перенос разряда при
+  сложении столбиком.
+
+**Примеры:**
 
 ```nim
-let dur = initDuration(seconds = 1, milliseconds = 1)
-doAssert dur.inMilliseconds == 1001
-doAssert dur.inSeconds == 1
-
-let dur2 = initDuration(hours = 1, minutes = 30)
-doAssert dur2.inMinutes == 90
+let
+  half = initDuration(minutes = 30)
+  hour = initDuration(hours = 1)
+doAssert half + half == hour
+doAssert hour - half == half
+doAssert -half < DurationZero
+doAssert half * 2 == hour
+doAssert hour div 2 == half
+var acc = DurationZero
+acc += hour
+doAssert acc == hour
 ```
 
 ---
 
-### Конвертация Duration в единицы времени
+### `high`, `low`, `abs` (Duration)
 
 ```nim
-proc inWeeks(dur: Duration): int64
-proc inDays(dur: Duration): int64
-proc inHours(dur: Duration): int64
-proc inMinutes(dur: Duration): int64
-proc inSeconds(dur: Duration): int64
-proc inMilliseconds(dur: Duration): int64
-proc inMicroseconds(dur: Duration): int64
-proc inNanoseconds(dur: Duration): int64
-```
-Каждая функция возвращает длительность, преобразованную в указанные единицы (целая часть).
-
-```nim
-doAssert initDuration(days = 8).inWeeks == 1
-doAssert initDuration(hours = -50).inDays == -2
-doAssert initDuration(minutes = 60, days = 2).inHours == 49
-doAssert initDuration(seconds = -2).inMilliseconds == -2000
-doAssert initDuration(seconds = -2).inNanoseconds == -2000000000
+proc high*(typ: typedesc[Duration]): Duration
+proc low*(typ: typedesc[Duration]): Duration
+proc abs*(a: Duration): Duration
 ```
 
----
+**Функция.** `high`/`low` возвращают граничные представимые длительности,
+`abs` — длительность без учёта знака (полезно, когда важна только величина
+разницы, а не то, какое из двух значений времени было раньше).
 
-### `toParts` (для Duration)
+- **Параметры:** `typ` — тип-плейсхолдер `Duration` (не используется как
+  значение, только для выбора перегрузки); `a` — длительность для `abs`.
+
+**Пример:**
+
 ```nim
-proc toParts(dur: Duration): DurationParts
-```
-Разбивает `Duration` на составляющие единицы времени. Результат — массив, индексируемый `FixedTimeUnit`.
-
-```nim
-var dp = toParts(initDuration(weeks = 2, days = 1))
-doAssert dp[Days] == 1
-doAssert dp[Weeks] == 2
-doAssert dp[Minutes] == 0
-
-dp = toParts(initDuration(days = -1))
-doAssert dp[Days] == -1
+doAssert abs(initDuration(hours = -3)) == initDuration(hours = 3)
 ```
 
 ---
 
 ### `$` (Duration)
-```nim
-proc `$`(dur: Duration): string
-```
-Возвращает человекочитаемое строковое представление.
 
 ```nim
-doAssert $initDuration(seconds = 2) == "2 seconds"
-doAssert $initDuration(weeks = 1, days = 2) == "1 week and 2 days"
-doAssert $initDuration(hours = 1, minutes = 2, seconds = 3) == "1 hour, 2 minutes, and 3 seconds"
-doAssert $initDuration(milliseconds = -1500) == "-1 second and -500 milliseconds"
+proc `$`*(dur: Duration): string
 ```
 
----
+**Функция.** Человекочитаемое представление длительности вида
+`"1 hour and 30 minutes"` (только ненулевые единицы, единственное число при
+величине 1). Нулевая длительность выводится как `"0 nanoseconds"`.
 
-### Арифметика с Duration
-
-```nim
-proc `+`(a, b: Duration): Duration       # сложение
-proc `-`(a, b: Duration): Duration       # вычитание
-proc `-`(a: Duration): Duration          # унарный минус
-proc `*`(a: int64, b: Duration): Duration  # умножение на скаляр
-proc `*`(a: Duration, b: int64): Duration
-proc `div`(a: Duration, b: int64): Duration  # целочисленное деление
-proc `<`(a, b: Duration): bool
-proc `<=`(a, b: Duration): bool
-proc `==`(a, b: Duration): bool
-proc `+=`(d1: var Duration, d2: Duration)
-proc `-=`(dt: var Duration, ti: Duration)
-proc `*=`(a: var Duration, b: int)
-```
+**Пример:**
 
 ```nim
-let a = initDuration(seconds = 5)
-let b = initDuration(seconds = 3)
-
-doAssert a + b == initDuration(seconds = 8)
-doAssert a - b == initDuration(seconds = 2)
-doAssert 2 * a == initDuration(seconds = 10)
-doAssert a div 2 == initDuration(milliseconds = 2500)
-doAssert a > b
-doAssert -a == initDuration(seconds = -5)
-
-# Сравнение абсолютных значений:
-doAssert initDuration(seconds = -2).abs < initDuration(seconds = 1).abs == false
+echo $initDuration(hours = 1, minutes = 30)  # выводит "1 hour and 30 minutes"
+echo $DurationZero                            # выводит "0 nanoseconds"
 ```
 
 ---
+## Time — точка во времени
 
-### `abs` (Duration)
-```nim
-proc abs(a: Duration): Duration
-```
-Возвращает абсолютное значение длительности.
+### `initTime` и `nanosecond`
 
 ```nim
-doAssert initDuration(milliseconds = -1500).abs == initDuration(milliseconds = 1500)
+proc initTime*(unix: int64, nanosecond: NanosecondRange): Time
+proc nanosecond*(time: Time): NanosecondRange
 ```
 
----
+**Функция.** `initTime` собирает `Time` из числа секунд-от-эпохи и
+наносекундной добавки напрямую, минуя `fromUnix`/`getTime`. `nanosecond` —
+единственный публичный аксессор наносекундной части (для секунд аксессора
+нет — используйте `toUnix`).
 
-### `high` / `low` (Duration)
-```nim
-proc high(typ: typedesc[Duration]): Duration
-proc low(typ: typedesc[Duration]): Duration
-```
-Возвращают максимальную и минимальную представимые длительности.
+- **Параметры:**
+  - `unix: int64` — секунды от эпохи Unix (может быть отрицательным для дат
+    до 1970 года);
+  - `nanosecond: NanosecondRange` — наносекундная добавка, `0..999999999`.
 
----
-
-## Time — момент времени
-
-### `initTime`
-```nim
-proc initTime(unix: int64, nanosecond: NanosecondRange): Time
-```
-Создаёт `Time` из Unix-метки и наносекундной части.
+**Пример:**
 
 ```nim
-let t = initTime(1_000_000, 500)
+let t = initTime(0, 500_000_000)
+doAssert nanosecond(t) == 500_000_000
 ```
-
----
-
-### `getTime`
-```nim
-proc getTime(): Time
-```
-Возвращает текущее время с точностью до наносекунд (зависит от платформы).
-
-```nim
-let now = getTime()
-echo now
-```
-
----
-
-### `nanosecond` (Time)
-```nim
-proc nanosecond(time: Time): NanosecondRange
-```
-Дробная часть секунды в наносекундах.
 
 ---
 
 ### `fromUnix` / `toUnix`
-```nim
-proc fromUnix(unix: int64): Time
-proc toUnix(t: Time): int64
-```
-Конвертация между Unix-меткой (секунды от `1970-01-01T00:00:00Z`) и `Time`.
 
 ```nim
-doAssert $fromUnix(0).utc == "1970-01-01T00:00:00Z"
-doAssert fromUnix(0).toUnix() == 0
+proc fromUnix*(unix: int64): Time
+proc toUnix*(t: Time): int64
 ```
 
----
+**Функция.** Пара конвертеров между `Time` и обычным Unix-таймстампом в
+секундах (без наносекунд — `fromUnix` даёт наносекундную часть, равную 0,
+`toUnix` её отбрасывает).
 
-### `fromUnixFloat` / `toUnixFloat`
-```nim
-proc fromUnixFloat(seconds: float): Time
-proc toUnixFloat(t: Time): float
-```
-Аналог `fromUnix`/`toUnix`, но с субсекундным разрешением через `float`.
+- **Параметры:** `unix`/`t` — таймстамп в секундах либо значение `Time`.
+
+**Пример:**
 
 ```nim
-doAssert fromUnixFloat(123456.0) == fromUnixFloat(123456)
-let t = getTime()
-doAssert abs(t.toUnixFloat().fromUnixFloat - t) < initDuration(nanoseconds = 1000)
+let t = fromUnix(0)
+doAssert toUnix(t) == 0
+doAssert $t.utc == "1970-01-01T00:00:00Z"
 ```
 
 ---
 
 ### `fromWinTime` / `toWinTime`
-```nim
-proc fromWinTime(win: int64): Time
-proc toWinTime(t: Time): int64
-```
-Конвертация Windows File Time (100-наносекундные интервалы с `1601-01-01`).
-
----
-
-### Арифметика с Time
 
 ```nim
-proc `-`(a, b: Time): Duration       # разница между двумя моментами
-proc `+`(a: Time, b: Duration): Time
-proc `-`(a: Time, b: Duration): Time
-proc `<`(a, b: Time): bool
-proc `<=`(a, b: Time): bool
-proc `==`(a, b: Time): bool
-proc `+=`(t: var Time, b: Duration)
-proc `-=`(t: var Time, b: Duration)
+proc fromWinTime*(win: int64): Time
+proc toWinTime*(t: Time): int64
 ```
 
+**Функция.** Конвертация в/из "времени Windows" — 100-наносекундных
+интервалов от 1601-01-01 (эпоха `FILETIME`). Используется в основном при
+взаимодействии с Windows API или файлами, хранящими такие метки.
+
+- **Параметры:** `win` — количество 100-наносекундных интервалов от эпохи
+  Windows; `t` — значение `Time`.
+
+**Пример:**
+
 ```nim
-doAssert initTime(1000, 100) - initTime(500, 20) ==
-  initDuration(minutes = 8, seconds = 20, nanoseconds = 80)
-doAssert (fromUnix(0) + initDuration(seconds = 1)) == fromUnix(1)
-doAssert (fromUnix(0) - initDuration(seconds = 1)) == fromUnix(-1)
-doAssert initTime(50, 0) < initTime(99, 0)
+let t = fromWinTime(0)
+doAssert $t.utc == "1601-01-01T00:00:00Z"
+doAssert toWinTime(t) == 0
 ```
 
 ---
 
-### `high` / `low` (Time)
+### `getTime`
+
 ```nim
-proc high(typ: typedesc[Time]): Time
-proc low(typ: typedesc[Time]): Time
+proc getTime*(): Time
 ```
+
+**Функция.** Возвращает текущий момент как `Time` — платформенно-зависимая
+точность (на JS ограничена миллисекундами). Это низкоуровневая точка входа;
+`now()` — то же самое, но сразу переведённое в `DateTime` в локальном поясе.
+
+**Пример:**
+
+```nim
+let t1 = getTime()
+let t2 = getTime()
+doAssert t2 >= t1
+```
+
+---
+
+### Арифметика и сравнение `Time`
+
+```nim
+proc `-`*(a, b: Time): Duration
+proc `+`*(a: Time, b: Duration): Time
+proc `-`*(a: Time, b: Duration): Time
+proc `<`*(a, b: Time): bool
+proc `<=`*(a, b: Time): bool
+proc `==`*(a, b: Time): bool
+proc `+=`*(t: var Time, b: Duration)
+proc `-=`*(t: var Time, b: Duration)
+```
+
+**Функция.** Разность двух `Time` даёт фиксированную `Duration` (а не
+`TimeInterval` — для этого нужен `DateTime` и `between`), к `Time` можно
+прибавлять и вычитать `Duration`, сравнения работают напрямую по
+внутренним секундам/наносекундам.
+
+- **Параметры:** `a`, `b` — значения `Time` либо `Duration`, в зависимости
+  от перегрузки.
+
+**Пример:**
+
+```nim
+let
+  t1 = fromUnix(0)
+  t2 = fromUnix(3600)
+doAssert t2 - t1 == initDuration(hours = 1)
+doAssert t1 + initDuration(hours = 1) == t2
+doAssert t1 < t2
+```
+
+---
+
+### `high`, `low` (Time)
+
+```nim
+proc high*(typ: typedesc[Time]): Time
+proc low*(typ: typedesc[Time]): Time
+```
+
+**Функция.** Граничные представимые значения `Time` — удобны как
+"бесконечно далёкое будущее/прошлое" при инициализации сравнений.
 
 ---
 
 ### `$` (Time)
+
 ```nim
-proc `$`(time: Time): string
+proc `$`*(time: Time): string
 ```
-Преобразует в строку в локальном часовом поясе, формат `yyyy-MM-dd'T'HH:mm:sszzz`.
 
----
+**Функция.** Строковое представление `Time` — переводит значение в
+локальный часовой пояс и форматирует по шаблону `yyyy-MM-dd'T'HH:mm:sszzz`.
 
-## DateTime — дата и время
-
-### Конструкторы
-
-#### `dateTime`
-```nim
-proc dateTime(year: int, month: Month, monthday: MonthdayRange,
-              hour: HourRange = 0, minute: MinuteRange = 0, second: SecondRange = 0,
-              nanosecond: NanosecondRange = 0,
-              zone: Timezone = local()): DateTime
-```
-Основной способ создания `DateTime`. Параметры `hour`, `minute`, `second`, `nanosecond` и `zone` необязательны.
+**Пример:**
 
 ```nim
-assert $dateTime(2017, mMar, 30, zone = utc()) == "2017-03-30T00:00:00Z"
-let dt = dateTime(2024, mFeb, 29, 15, 30, 0, 0, utc())
+let dt = dateTime(1970, mJan, 01, 00, 00, 00, 00, utc())
+let tm = toTime(dt)
+echo $tm  # выводит "1970-01-01T00:00:00" + смещение локального пояса
 ```
 
 ---
+## DateTime — время, разобранное на поля
 
-#### `initDateTime` (ISO-неделя)
-```nim
-proc initDateTime(weekday: WeekDay, isoweek: IsoWeekRange, isoyear: IsoYear,
-                  hour, minute, second: ..., nanosecond: ...,
-                  zone: Timezone = local()): DateTime
-```
-Создаёт `DateTime` по ISO 8601 (день недели + номер недели + ISO-год).
+### Поля-аксессоры DateTime
 
 ```nim
-assert initDateTime(21, mApr, 2018, 0, 0, 0) ==
-  initDateTime(dSat, 16, 2018.IsoYear, 0, 0, 0)
-assert initDateTime(30, mDec, 2019, 0, 0, 0) ==
-  initDateTime(dMon, 01, 2020.IsoYear, 0, 0, 0)  # ISO-год следующего года!
-```
-
----
-
-#### `now`
-```nim
-proc now(): DateTime
-```
-Текущее время в локальном часовом поясе. Сокращение для `getTime().local`.
-
-> **Внимание:** не подходит для бенчмаркинга — используйте `cpuTime` или `monotimes.getMonoTime`.
-
-```nim
-let dt = now()
-echo dt   # e.g. "2024-06-01T14:30:00+03:00"
+proc nanosecond*(dt: DateTime): NanosecondRange
+proc second*(dt: DateTime): SecondRange
+proc minute*(dt: DateTime): MinuteRange
+proc hour*(dt: DateTime): HourRange
+proc monthday*(dt: DateTime): MonthdayRange
+proc month*(dt: DateTime): Month
+proc year*(dt: DateTime): int
+proc weekday*(dt: DateTime): WeekDay
+proc yearday*(dt: DateTime): YeardayRange
+proc isDst*(dt: DateTime): bool
+proc timezone*(dt: DateTime): Timezone
+proc utcOffset*(dt: DateTime): int
 ```
 
----
+**Функция.** Набор простых аксессоров только для чтения — каждый
+возвращает соответствующее поле `DateTime`. `weekday` и `yearday` не
+хранятся отдельно вводом пользователя, а вычисляются модулем в момент
+создания `DateTime` (через `getDayOfWeek`/`getDayOfYear`), так что они
+всегда согласованы с датой. Каждый аксессор проверяет, что `dt`
+инициализирован, и падает с ассертом на "пустом" `DateTime`.
 
-### Аксессоры DateTime
+| Аксессор | Тип | Значение |
+|---|---|---|
+| `nanosecond` | `NanosecondRange` | наносекунды в текущей секунде |
+| `second` | `SecondRange` | секунда (0..60, с учётом возможной високосной) |
+| `minute` | `MinuteRange` | минута |
+| `hour` | `HourRange` | час (0..23) |
+| `monthday` | `MonthdayRange` | день месяца (1..31) |
+| `month` | `Month` | месяц |
+| `year` | `int` | год (может быть отрицательным, до н.э.) |
+| `weekday` | `WeekDay` | день недели — вычисляется автоматически |
+| `yearday` | `YeardayRange` | день года (0..365) — вычисляется автоматически |
+| `isDst` | `bool` | действует ли летнее время |
+| `timezone` | `Timezone` | часовой пояс значения |
+| `utcOffset` | `int` | смещение от UTC в секундах |
+
+**Пример:**
 
 ```nim
-proc nanosecond(dt: DateTime): NanosecondRange   # 0..999_999_999
-proc second(dt: DateTime): SecondRange            # 0..59
-proc minute(dt: DateTime): MinuteRange            # 0..59
-proc hour(dt: DateTime): HourRange                # 0..23
-proc monthday(dt: DateTime): MonthdayRange        # 1..31
-proc month(dt: DateTime): Month
-proc year(dt: DateTime): int
-proc weekday(dt: DateTime): WeekDay
-proc yearday(dt: DateTime): YeardayRange          # 0..365
-proc isDst(dt: DateTime): bool
-proc timezone(dt: DateTime): Timezone
-proc utcOffset(dt: DateTime): int  # секунды к западу от UTC (противоположный знак от "+HH:MM")
-```
-
-```nim
-let dt = now()
-echo dt.year, "/", dt.month.ord, "/", dt.monthday
-echo dt.hour, ":", dt.minute, ":", dt.second
-echo "День недели: ", dt.weekday
-echo "DST: ", dt.isDst
+let dt = dateTime(2020, mFeb, 29, 12, 30, 00, 00, utc())
+doAssert year(dt) == 2020
+doAssert month(dt) == mFeb
+doAssert monthday(dt) == 29
+doAssert weekday(dt) == dSat  # вычислено автоматически, не задавалось явно
 ```
 
 ---
 
-### `isLeapDay`
-```nim
-proc isLeapDay(dt: DateTime): bool
-```
-Возвращает `true`, если дата является 29 февраля в високосном году.
+### `dateTime` и устаревшие `initDateTime`
 
 ```nim
-let dt = dateTime(2020, mFeb, 29, 0, 0, 0, 0, utc())
-doAssert dt.isLeapDay
-doAssert dt + 1.years - 1.years != dt  # Не возвращается в ту же дату!
+proc dateTime*(year: int, month: Month, monthday: MonthdayRange,
+               hour: HourRange = 0, minute: MinuteRange = 0, second: SecondRange = 0,
+               nanosecond: NanosecondRange = 0,
+               zone: Timezone = local()): DateTime
 ```
 
----
+**Функция.** Основной конструктор `DateTime` — по календарным полям и
+часовому поясу. Порядок аргументов `year, month, monthday` (в отличие от
+двух устаревших перегрузок `initDateTime`, где день шёл первым) выбран как
+более естественный для чтения "год-месяц-день". Внутри дата сначала
+собирается как "локальное" время (`toAdjTime`), а затем переводится в
+реальный `Time` через `zonedTimeFromAdjTime` конкретного пояса — так
+корректно учитываются переходы летнего времени на границе полуночи.
 
-### `isInitialized`
-```nim
-proc isInitialized(dt: DateTime): bool
-```
-Возвращает `true`, если `DateTime` был инициализирован (не является значением по умолчанию).
+- **Параметры:**
+  - `year: int` — год (отрицательные значения — до нашей эры);
+  - `month: Month` — месяц;
+  - `monthday: MonthdayRange` — день месяца, обязателен;
+  - `hour`, `minute`, `second`, `nanosecond` — время суток, по умолчанию 0;
+  - `zone: Timezone` — часовой пояс, по умолчанию `local()`.
+
+Две устаревшие перегрузки `initDateTime*(monthday, month, year, ...)`
+делают то же самое, но с другим порядком первых трёх параметров, и
+помечены `{.deprecated: "use dateTime".}` — в новом коде их использовать
+не стоит.
+
+**Примеры:**
 
 ```nim
-doAssert now().isInitialized
-doAssert not default(DateTime).isInitialized
+let dt = dateTime(2017, mMar, 30, zone = utc())
+doAssert $dt == "2017-03-30T00:00:00Z"
+
+doAssertRaises(AssertionDefect):
+  discard dateTime(2021, mFeb, 29, zone = utc())  # 2021 — не високосный
 ```
 
 ---
 
 ### `toTime`
-```nim
-proc toTime(dt: DateTime): Time
-```
-Конвертирует `DateTime` в `Time`.
 
 ```nim
-let t = now().toTime()
+proc toTime*(dt: DateTime): Time
+```
+
+**Функция.** Переводит `DateTime` обратно в "сырой" `Time` — момент времени
+без привязки к часовому поясу. Это обратная операция к `inZone`.
+
+- **Разбор реализации.** Дата сначала переводится в "epoch day" (число дней
+  от 1970-01-01) алгоритмом Ховарда Хиннанта (`toEpochDay`), основанным на
+  делении с учётом 400-летней эры Григорианского календаря — этот приём
+  позволяет корректно работать и с отрицательными годами без веток на
+  каждый конкретный век. Epoch day домножается на число секунд в сутках,
+  прибавляются часы/минуты/секунды и `utcOffset` — получаются секунды от
+  эпохи Unix.
+
+**Пример:**
+
+```nim
+let dt = dateTime(1970, mJan, 01, 00, 00, 00, 00, utc())
+doAssert toUnix(toTime(dt)) == 0
 ```
 
 ---
 
-### `$` (DateTime)
-```nim
-proc `$`(dt: DateTime): string
-```
-Форматирует как `yyyy-MM-dd'T'HH:mm:sszzz`.
+### `isLeapDay`
 
 ```nim
-let dt = dateTime(2000, mJan, 01, 12, 0, 0, 0, utc())
-doAssert $dt == "2000-01-01T12:00:00Z"
-doAssert $default(DateTime) == "Uninitialized DateTime"
+proc isLeapDay*(dt: DateTime): bool
+```
+
+**Функция.** Проверяет, что дата — именно 29 февраля високосного года. Это
+важно для арифметики: прибавление и вычитание одного года подряд к 29
+февраля не обязано вернуть исходную дату (следующий год может быть не
+високосным).
+
+**Пример:**
+
+```nim
+let dt = dateTime(2020, mFeb, 29, 00, 00, 00, 00, utc())
+doAssert isLeapDay(dt)
+doAssert dt + 1.years - 1.years != dt  # 29 февраля "не переживает" не-високосный год
 ```
 
 ---
 
-### Арифметика с DateTime
+### Арифметика и сравнение `DateTime` через `Duration`
 
 ```nim
-proc `+`(dt: DateTime, dur: Duration): DateTime
-proc `-`(dt: DateTime, dur: Duration): DateTime
-proc `-`(dt1, dt2: DateTime): Duration
-proc `<`(a, b: DateTime): bool
-proc `<=`(a, b: DateTime): bool
-proc `==`(a, b: DateTime): bool
-proc `+=`(a: var DateTime, b: Duration)
-proc `-=`(a: var DateTime, b: Duration)
+proc `+`*(dt: DateTime, dur: Duration): DateTime
+proc `-`*(dt: DateTime, dur: Duration): DateTime
+proc `-`*(dt1, dt2: DateTime): Duration
+proc `<`*(a, b: DateTime): bool
+proc `<=`*(a, b: DateTime): bool
+proc `==`*(a, b: DateTime): bool
+proc `+=`*(a: var DateTime, b: Duration)
+proc `-=`*(a: var DateTime, b: Duration)
 ```
 
-```nim
-let dt = dateTime(2017, mMar, 30, 0, 0, 0, 0, utc())
-let dur = initDuration(hours = 5)
-doAssert $(dt + dur) == "2017-03-30T05:00:00Z"
+**Функция.** Позволяют прибавлять/вычитать фиксированную `Duration`
+непосредственно к `DateTime` (результат остаётся в том же часовом поясе), а
+разность двух `DateTime` даёт точную `Duration` — в секундах, без
+календарной трактовки. Сравнения работают по фактическому моменту времени
+(через приведение к `Time`), а не по значениям полей напрямую.
 
-let dt2 = dateTime(2017, mMar, 25, 0, 0, 0, 0, utc())
-doAssert dt - dt2 == initDuration(days = 5)
+- **Разбор реализации.** Все операции реализованы через промежуточный
+  перевод в `Time` (`toTime`) и обратно (`inZone`) — то есть арифметика с
+  `Duration` для `DateTime` — это, по сути, арифметика с `Time`,
+  обёрнутая переводом в/из часового пояса.
+
+**Пример:**
+
+```nim
+let dt = dateTime(2020, mJan, 01, 00, 00, 00, 00, utc())
+let later = dt + initDuration(hours = 25)  # переходит на следующий день
+doAssert monthday(later) == 2
+doAssert later - dt == initDuration(hours = 25)
 ```
 
 ---
 
 ### `getDateStr` / `getClockStr`
-```nim
-proc getDateStr(dt = now()): string
-proc getClockStr(dt = now()): string
-```
-Быстрое получение строки даты (`YYYY-MM-dd`) или времени (`HH:mm:ss`).
 
 ```nim
-echo getDateStr()          # напр. "2024-06-01"
-echo getClockStr()         # напр. "14:30:00"
-echo getDateStr(now() - 1.months)   # вчерашняя дата минус месяц
+proc getDateStr*(dt = now()): string
+proc getClockStr*(dt = now()): string
 ```
 
----
+**Функция.** Готовые короткие форматтеры: `getDateStr` даёт дату вида
+`"2020-01-01"`, `getClockStr` — время суток вида `"12:30:00"`. Удобны,
+когда не нужен полный контроль формата через `format`.
 
-## Timezone — часовые пояса
+- **Параметры:** `dt` — значение `DateTime`, по умолчанию текущий момент
+  (`now()`).
 
-### `utc`
+**Пример:**
+
 ```nim
-proc utc(): Timezone
-```
-Возвращает реализацию часового пояса UTC (`"Etc/UTC"`).
-
-```nim
-doAssert now().utc.timezone == utc()
-doAssert utc().name == "Etc/UTC"
+let dt = dateTime(2020, mJan, 01, 12, 30, 00, 00, utc())
+doAssert getDateStr(dt) == "2020-01-01"
+doAssert getClockStr(dt) == "12:30:00"
 ```
 
 ---
 
-### `local`
-```nim
-proc local(): Timezone
-```
-Возвращает реализацию локального системного часового пояса (`"LOCAL"`).
+### `$` (DateTime)
 
 ```nim
-doAssert now().timezone == local()
-doAssert local().name == "LOCAL"
+proc `$`*(dt: DateTime): string
 ```
 
----
+**Функция.** Строковое представление по формату
+`yyyy-MM-dd'T'HH:mm:sszzz` (ISO 8601-подобный формат). Для
+неинициализированного `DateTime` (значение по умолчанию) возвращает
+строку `"Uninitialized DateTime"` вместо падения с ошибкой.
 
-### `utc` / `local` (конвертация)
-```nim
-proc utc(dt: DateTime): DateTime   # dt.inZone(utc())
-proc local(dt: DateTime): DateTime # dt.inZone(local())
-proc utc(t: Time): DateTime
-proc local(t: Time): DateTime
-```
-Краткая запись для конвертации в UTC или локальный часовой пояс.
+**Пример:**
 
 ```nim
-let dtUtc = now().utc
-let dtLocal = getTime().local
+let dt = dateTime(2000, mJan, 01, 12, 00, 00, 00, utc())
+doAssert $dt == "2000-01-01T12:00:00Z"
+doAssert $default(DateTime) == "Uninitialized DateTime"
 ```
 
 ---
+## Часовые пояса
 
-### `inZone`
-```nim
-proc inZone(time: Time, zone: Timezone): DateTime
-proc inZone(dt: DateTime, zone: Timezone): DateTime
-```
-Конвертирует `Time` или `DateTime` в другой часовой пояс.
+### `Timezone`, `newTimezone`
 
 ```nim
-let utcDt = getTime().inZone(utc())
-let localDt = getTime().inZone(local())
+proc newTimezone*(
+      name: string,
+      zonedTimeFromTimeImpl: proc (time: Time): ZonedTime {.tags: [], raises: [], gcsafe.},
+      zonedTimeFromAdjTimeImpl: proc (adjTime: Time): ZonedTime {.tags: [], raises: [], gcsafe.}
+    ): owned Timezone
 ```
 
----
+**Функция.** Конструктор произвольного часового пояса из двух функций
+конвертации (из "сырого" `Time` в зонированное представление и из
+"локального времени" — тоже как `Time`, но трактуемого не как момент, а
+как показание часов в этом поясе). Используется, когда нужен пояс, которого
+нет среди встроенных `utc`/`local` — например, при подключении сторонней
+базы IANA tzdata.
 
-### `newTimezone`
-```nim
-proc newTimezone(
-    name: string,
-    zonedTimeFromTimeImpl: proc(time: Time): ZonedTime,
-    zonedTimeFromAdjTimeImpl: proc(adjTime: Time): ZonedTime
-  ): owned Timezone
-```
-Создаёт пользовательский часовой пояс. Полезно для реализации часовых поясов не из стандартной базы tz.
+- **Параметры:**
+  - `name: string` — по возможности имя из базы tz (например,
+    `"Europe/Amsterdam"`), иначе — любая уникальная строка (влияет на
+    сравнение `==` между поясами);
+  - `zonedTimeFromTimeImpl` — функция "момент времени -> зонированное время";
+  - `zonedTimeFromAdjTimeImpl` — функция "локальные часы -> зонированное время".
+
+**Пример:**
 
 ```nim
 proc utcTzInfo(time: Time): ZonedTime =
@@ -722,28 +825,71 @@ let myUtc = newTimezone("Etc/UTC", utcTzInfo, utcTzInfo)
 
 ---
 
-### `name` (Timezone)
+### `utc` / `local`
+
 ```nim
-proc name(zone: Timezone): string
+proc utc*(): Timezone
+proc local*(): Timezone
+proc utc*(dt: DateTime): DateTime
+proc local*(dt: DateTime): DateTime
+proc utc*(t: Time): DateTime
+proc local*(t: Time): DateTime
 ```
-Возвращает имя часового пояса.
+
+**Функция.** Первая пара возвращает сами объекты `Timezone` — UTC и
+системный локальный пояс (закешированы в потокоопасных `threadvar`, чтобы
+не пересоздавать их на каждый вызов). Остальные четыре перегрузки — это
+удобные сокращения для `inZone(utc())`/`inZone(local())`: переводят уже
+существующий `DateTime` или `Time` в указанный пояс.
+
+**Пример:**
+
+```nim
+doAssert name(utc()) == "Etc/UTC"
+let t = fromUnix(0)
+let dtUtc = utc(t)      # DateTime в UTC
+doAssert timezone(dtUtc) == utc()
+```
 
 ---
 
-### `zonedTimeFromTime` / `zonedTimeFromAdjTime`
+### `inZone`
+
 ```nim
-proc zonedTimeFromTime(zone: Timezone, time: Time): ZonedTime
-proc zonedTimeFromAdjTime(zone: Timezone, adjTime: Time): ZonedTime
+proc inZone*(time: Time, zone: Timezone): DateTime
+proc inZone*(dt: DateTime, zone: Timezone): DateTime
 ```
-Низкоуровневые функции для реализации часовых поясов.
+
+**Функция.** Универсальный перевод в произвольный часовой пояс: и `Time` в
+`DateTime`, и уже имеющийся `DateTime` — в тот же момент времени, но
+представленный в другом поясе.
+
+- **Параметры:** `time`/`dt` — исходное значение; `zone` — целевой пояс.
+
+**Пример:**
+
+```nim
+let t = fromUnix(0)
+let dtUtc = inZone(t, utc())
+doAssert $dtUtc == "1970-01-01T00:00:00Z"
+```
 
 ---
 
-### `$` / `==` (Timezone)
+### `name`, `$`, `==` для `Timezone`
+
 ```nim
-proc `$`(zone: Timezone): string
-proc `==`(zone1, zone2: Timezone): bool  # сравнение по имени
+proc name*(zone: Timezone): string
+proc `$`*(zone: Timezone): string
+proc `==`*(zone1, zone2: Timezone): bool
 ```
+
+**Функция.** `name` — сохранённое имя пояса, `$` — то же самое как строка
+(пустая строка для `nil`), `==` сравнивает пояса по имени (а не по
+идентичности объекта) — то есть два разных `Timezone`, созданных с одним
+именем, считаются равными.
+
+**Пример:**
 
 ```nim
 doAssert local() == local()
@@ -752,351 +898,636 @@ doAssert local() != utc()
 
 ---
 
-## Форматирование и парсинг
+### `now`
 
-### `initTimeFormat`
 ```nim
-proc initTimeFormat(f: string): TimeFormat
+proc now*(): DateTime
 ```
-Компилирует строку формата в `TimeFormat` для последующего использования.
+
+**Функция.** Сокращение для `local(getTime())` — текущий момент времени в
+виде `DateTime` в локальном часовом поясе. Не годится для бенчмаркинга —
+для этого в модуле есть `cpuTime`.
+
+---
+## Форматирование и парсинг дат
+
+### Синтаксис формат-строк
+
+Формат-строка описывает шаблон, по которому строится или разбирается
+дата. Основные паттерны (полный список см. в комментариях исходного
+модуля):
+
+| Паттерн | Значение | Пример |
+|---|---|---|
+| `d`, `dd` | день месяца (1-2 цифры) | `1`, `01` |
+| `ddd`, `dddd` | день недели, кратко/полностью | `Sat`, `Saturday` |
+| `M`, `MM`, `MMM`, `MMMM` | месяц: число, число с нулём, кратко, полностью | `9`, `09`, `Sep`, `September` |
+| `yyyy`, `yy` | год с полным/усечённым числом цифр | `2012`, `12` |
+| `H`, `HH` | час 0-23 | `2`, `02` |
+| `h`, `hh`, `t`, `tt` | час 1-12 и обозначение AM/PM | `5`, `05`, `P`, `PM` |
+| `m`, `mm`, `s`, `ss` | минуты, секунды | `30`, `06` |
+| `z`, `zz`, `zzz`, `zzzz` | смещение от UTC в разных видах | `+7`, `+07:00` |
+| `fff`, `ffffff`, `fffffffff` | доли секунды: милли-/микро-/наносекунды | `1`, `1000`, `1000000` |
+| `g` | эра (`AD`/`BC`) | `AD` |
+
+Произвольный текст внутри формата экранируется одинарными кавычками:
+`hh'->'mm` даст, например, `01->56`. Символы `: - , . ( ) / [ ]` и пробел
+можно вставлять без экранирования.
+
+---
+
+### `initTimeFormat` и `TimeFormat`
+
+```nim
+proc initTimeFormat*(format: string): TimeFormat
+proc `$`*(f: TimeFormat): string
+```
+
+**Функция.** `initTimeFormat` разбирает формат-строку один раз и превращает
+её в `TimeFormat` — предварительно скомпилированное представление
+(последовательность паттернов и литеральных вставок), которое затем
+многократно используется в `format`/`parse` без повторного парсинга
+строки формата. Перегрузки `format`/`parse`, принимающие `static[string]`,
+вызывают `initTimeFormat` на этапе компиляции — так ошибка в самом формате
+(а не в данных) обнаруживается сразу, а не в рантайме.
+
+- **Параметры:** `format: string` — формат-строка (см. таблицу паттернов выше).
+
+**Пример:**
 
 ```nim
 let f = initTimeFormat("yyyy-MM-dd")
-doAssert $f == "yyyy-MM-dd"
+echo $f  # выводит обратно "yyyy-MM-dd"
 ```
 
 ---
 
-### `format` (DateTime)
+### `format`
+
 ```nim
-proc format(dt: DateTime, f: TimeFormat, loc: DateTimeLocale = DefaultLocale): string
-proc format(dt: DateTime, f: string, loc: DateTimeLocale = DefaultLocale): string
-proc format(dt: DateTime, f: static[string]): string  # валидация на этапе компиляции
+proc format*(dt: DateTime, f: TimeFormat, loc: DateTimeLocale = DefaultLocale): string
+proc format*(dt: DateTime, f: string, loc: DateTimeLocale = DefaultLocale): string
+proc format*(dt: DateTime, f: static[string]): string
+proc format*(time: Time, f: string, zone: Timezone = local()): string
+proc format*(time: Time, f: static[string], zone: Timezone = local()): string
 ```
-Форматирует `DateTime` в строку по шаблону.
+
+**Функция.** Форматирует `DateTime` или `Time` по заданному шаблону.
+Перегрузки для `Time` дополнительно принимают `zone` — время сначала
+переводится в указанный пояс, затем форматируется. Перегрузки со
+`static[string]` компилируют формат во время компиляции (см. выше), обычная
+строковая перегрузка — в рантайме и может кинуть `TimeFormatParseError`
+при некорректном формате.
+
+- **Параметры:**
+  - `dt`/`time` — значение для форматирования;
+  - `f` — формат: готовый `TimeFormat`, обычная строка либо
+    строка, известная на этапе компиляции;
+  - `loc: DateTimeLocale` — локаль (названия месяцев/дней недели), по
+    умолчанию английская `DefaultLocale`;
+  - `zone: Timezone` — пояс для перегрузок с `Time`.
+
+**Пример:**
+
+```nim
+let dt = dateTime(2000, mJan, 01, 00, 00, 00, 00, utc())
+doAssert format(dt, "yyyy-MM-dd") == "2000-01-01"
+
+var tm = toTime(dt)
+doAssert format(tm, "yyyy-MM-dd'T'HH:mm:ss", utc()) == "1970-01-01T00:00:00" # пример границы: другой tm ниже
+```
+
+---
+
+### `parse` / `parseTime`
+
+```nim
+proc parse*(input: string, f: TimeFormat, zone: Timezone = local(), loc: DateTimeLocale = DefaultLocale): DateTime
+proc parse*(input, f: string, tz: Timezone = local(), loc: DateTimeLocale = DefaultLocale): DateTime
+proc parse*(input: string, f: static[string], zone: Timezone = local(), loc: DateTimeLocale = DefaultLocale): DateTime
+proc parseTime*(input, f: string, zone: Timezone): Time
+proc parseTime*(input: string, f: static[string], zone: Timezone): Time
+```
+
+**Функция.** Разбирает строку `input` по формату `f` и возвращает
+`DateTime` (или сразу `Time` — через `parseTime`). Если в строке был
+явный офсет UTC (паттерны `z`/`zz`/`zzz`/`zzzz`), результат переводится в
+`zone`; если офсета не было, строка трактуется как уже записанная во
+`zone`. При несовпадении строки с форматом кидается `TimeParseError`.
+
+- **Разбор реализации.** Формат и входная строка обходятся синхронно: для
+  литеральных участков посимвольно сверяется точное совпадение, для
+  паттернов вызывается разбор конкретной единицы (`parsePattern`),
+  накапливающий результат в промежуточную структуру `ParsedTime` — только
+  после полного прохода она конвертируется в готовый `DateTime`
+  (`toDateTime`/`toDateTimeByWeek`, в зависимости от того, парсились ли
+  обычные год/месяц/день или ISO-неделя/ISO-год).
+
+- **Параметры:**
+  - `input: string` — строка с датой;
+  - `f` — формат разбора (готовый `TimeFormat`, строка, либо строка,
+    известная на этапе компиляции);
+  - `zone`/`tz` — пояс, в котором трактовать дату при отсутствии
+    явного офсета;
+  - `loc: DateTimeLocale` — локаль названий месяцев/дней недели.
+
+**Примеры:**
 
 ```nim
 let f = initTimeFormat("yyyy-MM-dd")
-let dt = dateTime(2000, mJan, 01, 0, 0, 0, 0, utc())
-doAssert "2000-01-01" == dt.format(f)
+let dt = dateTime(2000, mJan, 01, 00, 00, 00, 00, utc())
+doAssert dt == parse("2000-01-01", f, utc())
 
-# Прямо строкой:
-doAssert "2000-01-01" == format(dt, "yyyy-MM-dd")
-
-# Со временем:
-echo dt.format("yyyy-MM-dd HH:mm:ss")
-```
-
----
-
-### `format` (Time)
-```nim
-proc format(time: Time, f: string, zone: Timezone = local()): string
-proc format(time: Time, f: static[string], zone: Timezone = local()): string
-```
-Форматирует `Time` в строку с использованием указанного часового пояса.
-
-```nim
-var dt = dateTime(1970, mJan, 01, 0, 0, 0, 0, utc())
-var tm = dt.toTime()
-doAssert format(tm, "yyyy-MM-dd'T'HH:mm:ss", utc()) == "1970-01-01T00:00:00"
-```
-
----
-
-### `formatValue`
-```nim
-proc formatValue(result: var string; value: DateTime | Time, specifier: string)
-```
-Адаптер для `std/strformat`. Позволяет использовать `DateTime` и `Time` в интерполяции строк.
-
-```nim
-import std/strformat
-let dt = now()
-echo fmt"{dt:yyyy-MM-dd}"
-```
-
----
-
-### `parse` (строка → DateTime)
-```nim
-proc parse(input: string, f: TimeFormat, zone: Timezone = local(),
-    loc: DateTimeLocale = DefaultLocale): DateTime
-proc parse(input, f: string, tz: Timezone = local(),
-    loc: DateTimeLocale = DefaultLocale): DateTime
-proc parse(input: string, f: static[string], zone: Timezone = local(),
-    loc: DateTimeLocale = DefaultLocale): DateTime
-```
-Парсит строку в `DateTime`. Вызывает исключение `TimeParseError` при ошибке.
-
-```nim
-let f = initTimeFormat("yyyy-MM-dd")
-let dt = dateTime(2000, mJan, 01, 0, 0, 0, 0, utc())
-doAssert dt == "2000-01-01".parse(f, utc())
-
-# Прямо строкой:
-doAssert dt == parse("2000-01-01", "yyyy-MM-dd", utc())
-```
-
----
-
-### `parseTime`
-```nim
-proc parseTime(input, f: string, zone: Timezone): Time
-proc parseTime(input: string, f: static[string], zone: Timezone): Time
-```
-Аналог `parse`, но возвращает `Time`.
-
-```nim
 let tStr = "1970-01-01T00:00:00+00:00"
 doAssert parseTime(tStr, "yyyy-MM-dd'T'HH:mm:sszzz", utc()) == fromUnix(0)
 ```
 
 ---
 
-## TimeInterval — календарный интервал
+### `DateTimeLocale`
+
+```nim
+DateTimeLocale* = object
+  MMM*, MMMM*: array[Month, string]
+  ddd*, dddd*: array[WeekDay, string]
+```
+*(упрощённо — фактические названия полей в модуле группируют строки по
+коротким/длинным формам месяцев и дней недели.)*
+
+**Функция.** Набор строк, используемых при форматировании/парсинге "по
+буквам" (`MMM`, `MMMM`, `ddd`, `dddd`) — позволяет форматировать и
+разбирать даты на языке, отличном от английского. `DefaultLocale` —
+встроенная англоязычная локаль, используемая по умолчанию.
+
+---
+## TimeInterval — календарные интервалы
 
 ### `initTimeInterval`
-```nim
-proc initTimeInterval(nanoseconds = 0, microseconds = 0, milliseconds = 0,
-                      seconds = 0, minutes = 0, hours = 0,
-                      days = 0, weeks = 0, months = 0, years = 0): TimeInterval
-```
-Создаёт новый `TimeInterval`. **Не нормализует** единицы (`hours = 24 != days = 1`).
 
 ```nim
-let day = initTimeInterval(hours = 24)
-let dt = dateTime(2000, mJan, 01, 12, 0, 0, 0, utc())
-doAssert $(dt + day) == "2000-01-02T12:00:00Z"
-doAssert initTimeInterval(hours = 24) != initTimeInterval(days = 1)
+proc initTimeInterval*(nanoseconds = 0, microseconds = 0, milliseconds = 0,
+                       seconds = 0, minutes = 0, hours = 0,
+                       days = 0, weeks = 0, months = 0, years = 0): TimeInterval
 ```
 
----
+**Функция.** Конструктор `TimeInterval` из произвольной комбинации
+календарных единиц. В отличие от `initDuration`, здесь **нет**
+нормализации — переданные `seconds = 90` так и останутся полем `seconds =
+90`, не превратятся в `minutes = 1, seconds = 30`.
 
-### Арифметика с TimeInterval
+- **Параметры:** `nanoseconds`, `microseconds`, `milliseconds`, `seconds`,
+  `minutes`, `hours`, `days`, `weeks`, `months`, `years` — каждая единица
+  по умолчанию 0, может быть отрицательной.
+
+**Пример:**
 
 ```nim
-proc `+`(ti1, ti2: TimeInterval): TimeInterval
-proc `-`(ti: TimeInterval): TimeInterval         # унарный минус
-proc `-`(ti1, ti2: TimeInterval): TimeInterval
-proc `+=`(a: var TimeInterval, b: TimeInterval)
-proc `-=`(a: var TimeInterval, b: TimeInterval)
-```
-
-```nim
-let ti1 = initTimeInterval(hours = 24)
-let ti2 = initTimeInterval(hours = 4)
-doAssert (ti1 - ti2) == initTimeInterval(hours = 20)
-
-let day = -initTimeInterval(hours = 24)
-doAssert day.hours == -24
+let ti = initTimeInterval(years = 2, weeks = 1, hours = 3, seconds = 15)
 ```
 
 ---
 
-### Сложение/вычитание DateTime + TimeInterval
+### Конструкторы отдельных единиц
 
 ```nim
-proc `+`(dt: DateTime, interval: TimeInterval): DateTime
-proc `-`(dt: DateTime, interval: TimeInterval): DateTime
-proc `+=`(a: var DateTime, b: TimeInterval)
-proc `-=`(a: var DateTime, b: TimeInterval)
+proc nanoseconds*(nanos: int): TimeInterval
+proc microseconds*(micros: int): TimeInterval
+proc milliseconds*(ms: int): TimeInterval
+proc seconds*(s: int): TimeInterval
+proc minutes*(m: int): TimeInterval
+proc hours*(h: int): TimeInterval
+proc days*(d: int): TimeInterval
+proc weeks*(w: int): TimeInterval
+proc months*(m: int): TimeInterval
+proc years*(y: int): TimeInterval
 ```
 
+**Функция.** Короткие однопольные конструкторы `TimeInterval` — каждый
+эквивалентен вызову `initTimeInterval` с одним заполненным полем. Основное
+назначение — читаемая арифметика вида "текущий момент плюс один год":
+за счёт этих процедур выражение `1.years` читается почти как обычная
+единица измерения.
+
+- **Параметры:** единственное число (`nanos`, `micros`, ..., `y`) — величина
+  соответствующей единицы.
+
+**Пример:**
+
 ```nim
-let dt = dateTime(2017, mMar, 30, 0, 0, 0, 0, utc())
-doAssert $(dt + 1.months) == "2017-04-30T00:00:00Z"
-doAssert $(dt - 1.months) == "2017-03-02T00:00:00Z"   # переполнение дня!
+let dt = dateTime(2020, mJan, 01, zone = utc())
+doAssert dt + years(1) == dateTime(2021, mJan, 01, zone = utc())
+doAssert dt + 1.years == dateTime(2021, mJan, 01, zone = utc())  # то же самое
 ```
 
 ---
 
-### Сложение/вычитание Time + TimeInterval
+### Арифметика `TimeInterval`
 
 ```nim
-proc `+`(time: Time, interval: TimeInterval): Time
-proc `-`(time: Time, interval: TimeInterval): Time
-proc `+=`(t: var Time, b: TimeInterval)
-proc `-=`(t: var Time, b: TimeInterval)
+proc `+`*(ti1, ti2: TimeInterval): TimeInterval
+proc `-`*(ti: TimeInterval): TimeInterval
+proc `-`*(ti1, ti2: TimeInterval): TimeInterval
+proc `+=`*(a: var TimeInterval, b: TimeInterval)
+proc `-=`*(a: var TimeInterval, b: TimeInterval)
 ```
 
+**Функция.** Складывает/вычитает два интервала **по каждому полю
+отдельно**, без переноса между единицами (сложение `initTimeInterval(hours
+= 20)` и `initTimeInterval(hours = 10)` даст `hours = 30`, а не `days = 1,
+hours = 6`). Унарный минус меняет знак у всех полей разом.
+
+**Пример:**
+
 ```nim
-let tm = fromUnix(0)
-doAssert tm + 5.seconds == fromUnix(5)
-doAssert tm - 5.seconds == fromUnix(-5)
+let a = initTimeInterval(hours = 20)
+let b = initTimeInterval(hours = 10)
+doAssert (a + b).hours == 30  # поля не нормализуются
+doAssert (-a).hours == -20
+```
+
+---
+
+### `toParts` и `$` (TimeInterval)
+
+```nim
+proc toParts*(ti: TimeInterval): TimeIntervalParts
+proc `$`*(ti: TimeInterval): string
+```
+
+**Функция.** `toParts` — массив всех десяти полей интервала (для удобного
+перебора), `$` — человекочитаемая строка вида `"2 years, 1 week, 3 hours,
+and 15 seconds"`.
+
+**Пример:**
+
+```nim
+let ti = initTimeInterval(years = 2, weeks = 1, hours = 3, seconds = 15)
+echo $ti  # выводит "2 years, 1 week, 3 hours, and 15 seconds"
+```
+
+---
+
+### Арифметика `DateTime`/`Time` с `TimeInterval`
+
+```nim
+proc `+`*(dt: DateTime, interval: TimeInterval): DateTime
+proc `-`*(dt: DateTime, interval: TimeInterval): DateTime
+proc `+`*(time: Time, interval: TimeInterval): Time
+proc `-`*(time: Time, interval: TimeInterval): Time
+proc `+=`*(a: var DateTime, b: TimeInterval)
+proc `-=`*(a: var DateTime, b: TimeInterval)
+proc `+=`*(t: var Time, b: TimeInterval)
+proc `-=`*(t: var Time, b: TimeInterval)
+```
+
+**Функция.** Прибавление/вычитание календарного интервала к моменту
+времени — единицы применяются от крупных к мелким (сначала года и месяцы,
+затем недели/дни, затем время суток), с учётом переходов через границы
+месяцев/лет и (для `DateTime`) часового пояса.
+
+- **Параметры:** `dt`/`time` — исходный момент; `interval: TimeInterval` —
+  на сколько сдвинуть.
+
+**Пример:**
+
+```nim
+doAssert dateTime(2017, mFeb, 01, zone = utc()) + 1.months ==
+  dateTime(2017, mMar, 01, zone = utc())
 ```
 
 ---
 
 ### `between`
-```nim
-proc between(startDt, endDt: DateTime): TimeInterval
-```
-Вычисляет разницу между двумя `DateTime` в виде `TimeInterval`. Гарантирует, что `startDt + between(startDt, endDt) == endDt` (при одинаковом часовом поясе).
 
 ```nim
-var a = dateTime(2015, mMar, 25, 12, 0, 0, 0, utc())
-var b = dateTime(2017, mApr, 1, 15, 0, 15, 0, utc())
-var ti = initTimeInterval(years = 2, weeks = 1, hours = 3, seconds = 15)
+proc between*(startDt, endDt: DateTime): TimeInterval
+```
+
+**Функция.** Вычисляет разницу между двумя `DateTime` как `TimeInterval` —
+в отличие от простого вычитания (которое даёт `Duration`), результат
+выражен в календарных единицах ("2 года, 1 неделя, 3 часа, 15 секунд"), а
+не в общем числе секунд. Гарантируется: все поля результата одного знака,
+и если оба `DateTime` в одном часовом поясе, то `startDt + between(startDt,
+endDt) == endDt`.
+
+- **Разбор реализации.** Года, месяцы и дни/недели вычисляются
+  последовательно и "жадно" — сначала максимальное целое число полных лет,
+  укладывающееся между датами, затем из остатка — максимальное число
+  месяцев, и так далее до дней; остаток времени суток (часы и мельче)
+  досчитывается напрямую через вычитание `Time`. Если время суток конца
+  интервала раньше времени суток начала (например, начало в 15:00, конец в
+  12:00 следующего дня), из календарной части сначала "занимается" один
+  день — аналогично тому, как при вычитании чисел в столбик занимают
+  разряд у соседней позиции.
+
+- **Параметры:** `startDt`, `endDt` — начало и конец интервала (порядок не
+  важен: `between(a, b) == -between(b, a)`).
+
+**Пример:**
+
+```nim
+let a = dateTime(2015, mMar, 25, 12, 0, 0, 00, utc())
+let b = dateTime(2017, mApr, 01, 15, 0, 15, 00, utc())
+let ti = initTimeInterval(years = 2, weeks = 1, hours = 3, seconds = 15)
 doAssert between(a, b) == ti
 doAssert between(a, b) == -between(b, a)
 ```
 
 ---
+## Календарные вычисления и ISO-недели
 
-### `toParts` (для TimeInterval)
-```nim
-proc toParts(ti: TimeInterval): TimeIntervalParts
-```
-Разбивает `TimeInterval` на массив, индексируемый `TimeUnit`.
+### `isLeapYear`, `getDaysInMonth`, `getDaysInYear`
 
 ```nim
-var tp = toParts(initTimeInterval(years = 1, nanoseconds = 123))
-doAssert tp[Years] == 1
-doAssert tp[Nanoseconds] == 123
+proc isLeapYear*(year: int): bool
+proc getDaysInMonth*(month: Month, year: int): int
+proc getDaysInYear*(year: int): int
 ```
 
----
+**Функция.** Базовые календарные предикаты: `isLeapYear` — по стандартному
+григорианскому правилу (делится на 4, но не на 100, если не делится ещё и
+на 400); `getDaysInMonth` — число дней в месяце с учётом года (для
+февраля); `getDaysInYear` — 365 или 366.
 
-### `$` (TimeInterval)
-```nim
-proc `$`(ti: TimeInterval): string
-```
-Человекочитаемое строковое представление.
+**Пример:**
 
 ```nim
-doAssert $initTimeInterval(years = 1, nanoseconds = 123) == "1 year and 123 nanoseconds"
-doAssert $initTimeInterval() == "0 nanoseconds"
+doAssert isLeapYear(2000)
+doAssert not isLeapYear(1900)  # делится на 100, но не на 400
+doAssert getDaysInMonth(mFeb, 2000) == 29
+doAssert getDaysInYear(2000) == 366
 ```
 
 ---
 
-## Удобные конструкторы интервалов
-
-Эти функции позволяют использовать синтаксис `5.seconds`, `2.hours` и т.д.
+### `getDayOfYear`, `getDayOfWeek`
 
 ```nim
-proc nanoseconds(nanos: int): TimeInterval
-proc microseconds(micros: int): TimeInterval
-proc milliseconds(ms: int): TimeInterval
-proc seconds(s: int): TimeInterval
-proc minutes(m: int): TimeInterval
-proc hours(h: int): TimeInterval
-proc days(d: int): TimeInterval
-proc weeks(w: int): TimeInterval
-proc months(m: int): TimeInterval
-proc years(y: int): TimeInterval
+proc getDayOfYear*(monthday: MonthdayRange, month: Month, year: int): YeardayRange
+proc getDayOfWeek*(monthday: MonthdayRange, month: Month, year: int): WeekDay
 ```
 
-```nim
-echo now() + 1.hours
-echo now() + 2.days
-echo now() - 1.months
-echo now() + 1.years
+**Функция.** Вычисляют, соответственно, номер дня в году (считая с 0) и
+день недели для произвольной даты — без создания полноценного `DateTime`.
+Именно эти процедуры используются внутри модуля для автозаполнения полей
+`yearday`/`weekday` при построении `DateTime`.
 
-# Можно комбинировать:
-let dt = now() + 1.years + 2.months + 3.days
+- **Разбор реализации.** `getDayOfWeek` не перебирает дни, а переводит дату
+  в epoch day (`toEpochDay`) и берёт остаток от деления на 7, зная, что
+  1970-01-01 — четверг: `days = epochDay - 3` сдвигает точку отсчёта на
+  ближайший предыдущий понедельник, после чего `floorDiv`/остаток дают
+  день недели напрямую, без циклов.
+
+**Пример:**
+
+```nim
+doAssert getDayOfYear(10, mFeb, 2000) == 40
+doAssert getDayOfWeek(13, mJun, 1990) == dWed
 ```
 
 ---
 
-## Системное время и бенчмаркинг
+### `IsoYear`, `getWeeksInIsoYear`, `getIsoWeekAndYear`
+
+```nim
+proc getWeeksInIsoYear*(y: IsoYear): IsoWeekRange
+proc getIsoWeekAndYear*(dt: DateTime): tuple[isoweek: IsoWeekRange, isoyear: IsoYear]
+```
+
+**Функция.** ISO 8601 определяет собственный "недельный" календарь, где
+год может состоять из 52 или 53 полных недель, а первые/последние дни
+января/декабря иногда принадлежат ISO-неделе соседнего календарного года.
+`getWeeksInIsoYear` возвращает 52 или 53 для данного ISO-года,
+`getIsoWeekAndYear` — переводит обычную дату в пару (номер ISO-недели,
+ISO-год), которая может отличаться от календарного года самой даты (30
+декабря 2019 года — это уже неделя 1 ISO-года 2020).
+
+- **Параметры:** `y: IsoYear` — ISO-год (`distinct int`); `dt: DateTime` —
+  дата, для которой нужно определить ISO-неделю и ISO-год.
+
+**Пример:**
+
+```nim
+doAssert getWeeksInIsoYear(IsoYear(2019)) == 52
+doAssert getWeeksInIsoYear(IsoYear(2020)) == 53
+
+let dt = dateTime(2019, mDec, 30, zone = utc())
+let (w, y) = getIsoWeekAndYear(dt)
+doAssert w == 1.IsoWeekRange
+doAssert y == 2020.IsoYear   # ISO-год "перескочил" на следующий
+```
+
+---
+
+### `initDateTime` по ISO-неделе
+
+```nim
+proc initDateTime*(weekday: WeekDay, isoweek: IsoWeekRange, isoyear: IsoYear,
+                   hour: HourRange, minute: MinuteRange, second: SecondRange,
+                   nanosecond: NanosecondRange,
+                   zone: Timezone = local()): DateTime
+proc initDateTime*(weekday: WeekDay, isoweek: IsoWeekRange, isoyear: IsoYear,
+                   hour: HourRange, minute: MinuteRange, second: SecondRange,
+                   zone: Timezone = local()): DateTime
+```
+
+**Функция.** Обратная операция к `getIsoWeekAndYear` — строит `DateTime` по
+дню недели и номеру ISO-недели/ISO-года, а не по обычным месяцу/дню.
+Удобно, когда исходные данные уже пришли в терминах ISO-календаря
+(например, из систем учёта рабочего времени, оперирующих номерами недель).
+
+- **Параметры:** `weekday: WeekDay` — день недели; `isoweek: IsoWeekRange`
+  — номер ISO-недели (1..53); `isoyear: IsoYear` — ISO-год;
+  `hour`/`minute`/`second`/`nanosecond` — время суток; `zone` — часовой пояс.
+
+**Пример:**
+
+```nim
+doAssert initDateTime(dSat, 16, 2018.IsoYear, 00, 00, 00) ==
+  dateTime(2018, mApr, 21, 00, 00, 00, zone = local())
+```
+
+---
+## Прочие процедуры
+
+### `convert`
+
+```nim
+proc convert*[T: SomeInteger](unitFrom, unitTo: FixedTimeUnit, quantity: T): T
+```
+
+**Функция.** Переводит целое количество одной фиксированной единицы
+времени в другую (`Days -> Hours`, `Seconds -> Milliseconds` и т.п.).
+Работает только с целыми числами, поэтому при переводе из более мелкой
+единицы в более крупную результат усекается, а не округляется.
+
+- **Параметры:** `unitFrom`, `unitTo: FixedTimeUnit` — единицы отправления
+  и назначения (диапазон `Nanoseconds..Weeks`); `quantity: T` — величина в
+  единице `unitFrom`.
+
+**Пример:**
+
+```nim
+doAssert convert(Days, Hours, 2) == 48
+doAssert convert(Days, Weeks, 13) == 1       # усечено
+doAssert convert(Seconds, Milliseconds, -1) == -1000
+```
+
+---
 
 ### `epochTime`
-```nim
-proc epochTime(): float
-```
-Возвращает количество секунд с начала Unix-эпохи (1970) в виде `float`. Имеет субсекундное разрешение, но **не подходит для бенчмаркинга**.
-
-> Предпочтительнее использовать `getTime()`.
 
 ```nim
-let t = epochTime()
-# ... какой-то код ...
-echo "Прошло секунд: ", epochTime() - t
+proc epochTime*(): float
 ```
+
+**Функция.** Текущее время в секундах от эпохи Unix, как `float` —
+низкоуровневая обёртка над системным вызовом. Модуль явно рекомендует
+предпочитать ей `getTime()`, а для замера длительности — `cpuTime` или
+`monotimes.getMonoTime`, поскольку `epochTime`/`getTime` подвержены сдвигу
+системных часов (NTP-коррекции и т.п.) и не годятся для бенчмаркинга.
 
 ---
 
 ### `cpuTime`
-```nim
-proc cpuTime(): float
-```
-Возвращает время CPU, затраченное текущим процессом (в секундах). Полезнее для бенчмаркинга чем `epochTime`. Может измерять реальное время в зависимости от ОС.
 
 ```nim
-var t0 = cpuTime()
+proc cpuTime*(): float
+```
+
+**Функция.** Время, потраченное процессором на выполнение текущего
+процесса, в секундах (на некоторых ОС фактически измеряет astable время, а
+не именно CPU-время). Само по себе значение не несёт смысла — полезна
+только разница между двумя вызовами.
+
+- **Параметры:** нет.
+
+**Пример:**
+
+```nim
+let t0 = cpuTime()
 var fib = @[0, 1, 1]
 for i in 1..10:
-  fib.add(fib[^1] + fib[^2])
-echo "CPU time [s]: ", cpuTime() - t0
+  add(fib, fib[^1] + fib[^2])
+echo "CPU time [s] ", cpuTime() - t0
 ```
 
 ---
+## Устаревшие сеттеры полей DateTime
 
-## Паттерны форматирования
-
-| Паттерн | Описание | Пример |
-|---|---|---|
-| `d` | День месяца (1–2 цифры) | `1` или `21` |
-| `dd` | День месяца (всегда 2 цифры) | `01` или `21` |
-| `ddd` | Сокращённое название дня | `Sat`, `Mon` |
-| `dddd` | Полное название дня | `Saturday` |
-| `GG` | Последние 2 цифры ISO-года | `13` |
-| `GGGG` | ISO-год (4 цифры) | `2013` |
-| `h` | Час 1–12 | `5` (pm), `2` (am) |
-| `hh` | Час 1–12 (2 цифры) | `05`, `11` |
-| `H` | Час 0–23 | `17`, `2` |
-| `HH` | Час 0–23 (2 цифры) | `17`, `02` |
-| `m` | Минуты (1–2 цифры) | `30`, `1` |
-| `mm` | Минуты (2 цифры) | `30`, `01` |
-| `M` | Месяц (1–2 цифры) | `9`, `12` |
-| `MM` | Месяц (2 цифры) | `09`, `12` |
-| `MMM` | Сокращённое название месяца | `Sep`, `Dec` |
-| `MMMM` | Полное название месяца | `September` |
-| `s` | Секунды (1–2 цифры) | `6` |
-| `ss` | Секунды (2 цифры) | `06` |
-| `t` | AM/PM (1 символ) | `A`, `P` |
-| `tt` | AM/PM (2 символа) | `AM`, `PM` |
-| `yy` | Последние 2 цифры года | `12` |
-| `yyyy` | Год (мин. 4 цифры, всегда положительный) | `2012`, `+12345` |
-| `YYYY` | Год (без паддинга, всегда положительный) | `2012`, `24` |
-| `uuuu` | Год (мин. 4 цифры, может быть отрицательным для до н.э.) | `-0023` |
-| `UUUU` | Год (без паддинга, может быть отрицательным) | `-23` |
-| `V` | ISO номер недели (1–2 цифры) | `5`, `13` |
-| `VV` | ISO номер недели (2 цифры) | `05`, `13` |
-| `z` | Смещение UTC | `+7`, `-5` |
-| `zz` | Смещение UTC (с нулём) | `+07`, `-05` |
-| `zzz` | Смещение UTC с минутами | `+07:00` |
-| `ZZZ` | Смещение UTC с минутами (без двоеточия) | `+0700` |
-| `zzzz` | Смещение UTC с секундами | `+07:00:00` |
-| `ZZZZ` | Смещение UTC с секундами (без двоеточий) | `+070000` |
-| `g` | Эра: AD или BC | `AD`, `BC` |
-| `fff` | Миллисекунды | `1` |
-| `ffffff` | Микросекунды | `1000` |
-| `fffffffff` | Наносекунды | `1000000` |
-
-**Литералы** вставляются в одинарных кавычках: `hh'->'mm` → `01->56`.  
-Без кавычек можно вставлять: `:`, `-`, `,`, `.`, `(`, `)`, `/`, `[`, `]`, пробел.
+Модуль сохраняет обратную совместимость набором помеченных
+`{.deprecated: "Deprecated since v1.3.1".}` процедур-сеттеров —
+`` `nanosecond=` ``, `` `second=` ``, `` `minute=` ``, `` `hour=` ``,
+`` `monthdayZero=` ``, `` `monthZero=` ``, `` `year=` ``, `` `weekday=` ``,
+`` `yearday=` ``, `` `isDst=` ``, `` `timezone=` ``, `` `utcOffset=` ``.
+Каждый напрямую присваивает значение соответствующему полю `DateTime`,
+минуя проверки согласованности (например, ручная установка `year=` не
+пересчитывает `weekday`/`yearday`). В новом коде вместо них следует
+использовать `dateTime`/`initDateTime` для создания нового значения
+целиком.
 
 ---
+## Практические рецепты
 
-## Duration vs TimeInterval
-
-| Характеристика | `Duration` | `TimeInterval` |
-|---|---|---|
-| Хранение | Секунды + наносекунды | Отдельные поля для каждой единицы |
-| Нормализация | Всегда нормализован | Не нормализован |
-| Производительность | Быстрая | Медленная (требует инфо о часовом поясе) |
-| Поддержка лет/месяцев | ❌ | ✅ |
-| Когда использовать | Большинство случаев | Только когда нужны годы/месяцы |
-
-**Важно о днях:** `Duration` считает день всегда равным 86400 секундам. `TimeInterval` работает с календарными днями — например, при переходе на летнее время один день может быть равен 25 часам.
+### 1. Замер длительности операции
 
 ```nim
-# Duration — фиксированные секунды
-let dur = initDuration(hours = 25)  # ровно 90000 секунд
+import std/times
 
-# TimeInterval — календарный день
-let ti = initTimeInterval(days = 1)  # ровно 1 calendar день
+let start = getTime()
+# ... код, время выполнения которого нужно измерить ...
+let elapsed = getTime() - start
+echo "Заняло: ", elapsed  # использует `$` (Duration) -> "N seconds" и т.п.
 ```
+
+---
+
+### 2. Разбор и форматирование дат из внешнего источника
+
+```nim
+import std/times
+
+let f = initTimeFormat("yyyy-MM-dd'T'HH:mm:sszzz")
+let dt = parse("2024-05-10T09:15:00+02:00", f, utc())
+echo format(dt, "dddd, d MMMM yyyy")  # человекочитаемая дата в UTC
+```
+
+---
+
+### 3. Человекочитаемый возраст/стаж
+
+```nim
+import std/times
+
+let birthDate = dateTime(1990, mJun, 15, zone = utc())
+let interval = between(birthDate, now().utc)
+echo years(interval), " лет, ", months(interval), " месяцев"
+```
+
+*(В примере `years`/`months` обращаются к одноимённым полям `TimeInterval`
+через точечную нотацию поля структуры — это разрешённое исключение из
+правила о префиксных вызовах, так как это доступ к полю, а не вызов
+процедуры.)*
+
+---
+
+### 4. Перевод отметки времени между часовыми поясами
+
+```nim
+import std/times
+
+let meetingUtc = dateTime(2024, mDec, 01, 14, 00, 00, zone = utc())
+let meetingLocal = inZone(meetingUtc, local())
+echo "Встреча по местному времени: ", format(meetingLocal, "HH:mm zzz")
+```
+
+---
+
+### 5. Планировщик "раз в N дней"
+
+```nim
+import std/times
+
+proc nextRun(lastRun: DateTime, everyDays: int): DateTime =
+  lastRun + initDuration(days = everyDays)
+
+var lastRun = dateTime(2024, mJan, 01, 03, 00, 00, zone = utc())
+let next = nextRun(lastRun, 7)
+doAssert next == dateTime(2024, mJan, 08, 03, 00, 00, zone = utc())
+```
+
+---
+## Краткая таблица
+
+| Задача | Тип результата | Что использовать |
+|---|---|---|
+| Текущий момент как "сырое" значение | `Time` | `getTime()` |
+| Текущий момент, разобранный на поля | `DateTime` | `now()` |
+| Построить дату по году/месяцу/дню | `DateTime` | `dateTime(...)` |
+| Точная длительность (секунды/часы) | `Duration` | `initDuration(...)` |
+| Календарный интервал ("1 год 2 дня") | `TimeInterval` | `initTimeInterval(...)` или `N.years`/`N.days`/... |
+| Разница между двумя `Time` | `Duration` | `t2 - t1` |
+| Разница между двумя `DateTime`, в календарных единицах | `TimeInterval` | `between(dt1, dt2)` |
+| Перевод в другой часовой пояс | `DateTime` | `inZone(dt, zone)` / `utc(dt)` / `local(dt)` |
+| Строка -> дата | `DateTime`/`Time` | `parse(...)` / `parseTime(...)` |
+| Дата -> строка по шаблону | `string` | `format(dt, "...")` |
+| Дата -> короткая строка без шаблона | `string` | `getDateStr(dt)` / `getClockStr(dt)` |
+| Число дней в месяце/году, високосность | `int`/`bool` | `getDaysInMonth`, `getDaysInYear`, `isLeapYear` |
+| Номер ISO-недели/ISO-года | `tuple` | `getIsoWeekAndYear(dt)` |
+| Замер производительности кода | `float` | `cpuTime()` |
+
+---
+## Сводка: какую процедуру выбрать
+
+- Нужна точка во времени без разбиения на поля → используйте `Time` и `getTime`/`fromUnix`.
+- Нужны год/месяц/день/час и т.п. по отдельности → используйте `DateTime` и `dateTime`/`now`.
+- Нужно прибавить/вычесть фиксированный промежуток (часы, секунды) → используйте `Duration` и `initDuration`.
+- Нужно прибавить/вычесть календарный промежуток (месяцы, годы), устойчивый к разной длине месяцев → используйте `TimeInterval` и `initTimeInterval`/`N.years` и т.п.
+- Нужна точная разница в секундах между двумя моментами → используйте оператор `-` между `Time` (или между `DateTime`, если пояс один и тот же).
+- Нужна разница "по-человечески" (сколько лет, месяцев, дней) → используйте `between`.
+- Нужно перевести время в другой пояс → используйте `inZone` (или сокращения `utc`/`local`).
+- Нужно разобрать строку с датой → используйте `parse`/`parseTime` с подходящим форматом.
+- Нужно вывести дату в конкретном формате → используйте `format`; для стандартного ISO-подобного вида достаточно `$`.
+- Нужно узнать число дней в месяце/году или проверить високосность → используйте `getDaysInMonth`/`getDaysInYear`/`isLeapYear`.
+- Работаете с ISO-неделями (например, интеграция с системами учёта времени) → используйте `getIsoWeekAndYear` и соответствующую перегрузку `initDateTime`.
+- Нужно измерить время выполнения кода → используйте `cpuTime` (не `epochTime`/`now`, они не гарантируют монотонность).
