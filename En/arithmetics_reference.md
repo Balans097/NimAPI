@@ -1,371 +1,315 @@
-# arithmetics.nim — Complete Reference
+# arithmetics — module reference
 
-> **Module**: `system/arithmetics` — Nim's Runtime Library  
-> **Purpose**: Defines all built-in arithmetic operators and a handful of ordinal helpers for every numeric type in Nim. Everything here is implemented as a compiler *magic* — the Nim compiler maps these directly to CPU instructions or C operators rather than calling any actual procedure body.  
-> **Exported via**: automatically available in every Nim program through the implicit `system` import.
+> **Import:** no separate `import` is needed — all procedures and operators in this module are part of `system` and are available in any Nim file without an import declaration.
+> **Scope:** the language's basic arithmetic: ordinal operations (succ/pred/inc/dec), signed and unsigned integer operators, division and remainder, bitwise operations and shifts, compound assignment operators, floating-point arithmetic, and a separate group of "wrap-around" operations that never raise an overflow exception.
 
----
-
-## How to Read This File
-
-Most entries carry the pragma `{.magic: "XYZ", noSideEffect.}`. This means:
-
-- The procedure body (if present) is for documentation and runnable examples only — the compiler replaces every call with the corresponding low-level instruction.
-- `noSideEffect` guarantees the compiler that the operation has no observable effect other than its return value, allowing it to be used in `func`, constant expressions, and strict mode.
-
-The operators are defined once for each concrete numeric type (`int`, `int8`, `int16`, `int32`, `int64`, `uint`, `uint8`, …, `float32`, `float64`). This reference groups the overloads and explains the semantics once, noting type-specific differences where they exist.
+Almost all procedures in the module are declared with the `{.magic: "...".}` pragma — meaning the actual implementation is built directly into the compiler (the code generator substitutes a machine instruction), and the `proc` body, where present, serves only for documentation and `runnableExamples`. The module's general convention: for signed integers, the operations `+`, `-`, `*`, `div`, `mod`, `inc`, `dec`, `succ`, `pred` raise `OverflowDefect` when the result falls outside the type's range (or produce a compile-time error for constants), whereas the unsigned (`uint`) versions of the same operations, along with a separate group of operators whose names contain `%` (`+%`, `-%`, `*%`, `/%`, `%%`), implement modular (wrap-around) arithmetic and never raise an overflow exception.
 
 ---
 
 ## Table of Contents
 
-1. [Ordinal Helpers](#1-ordinal-helpers)
-2. [Signed Integer Arithmetic](#2-signed-integer-arithmetic)
-3. [Integer Division and Modulo](#3-integer-division-and-modulo)
-4. [Bitwise Operations (Signed)](#4-bitwise-operations-signed)
-5. [Bit Shifts (Signed)](#5-bit-shifts-signed)
-6. [Unsigned Integer Arithmetic](#6-unsigned-integer-arithmetic)
-7. [Unsigned Bit Operations and Shifts](#7-unsigned-bit-operations-and-shifts)
-8. [Compound Assignment Operators](#8-compound-assignment-operators)
-9. [Floating-Point Arithmetic](#9-floating-point-arithmetic)
-10. [Wrapping Arithmetic Operators (`%`)](#10-wrapping-arithmetic-operators-)
-11. [Operator Precedence Quick Reference](#11-operator-precedence-quick-reference)
+I. Ordinal arithmetic: succ, pred, inc, dec
+&nbsp;&nbsp;1. `succ`
+&nbsp;&nbsp;2. `pred`
+&nbsp;&nbsp;3. `inc`
+&nbsp;&nbsp;4. `dec`
+
+II. Signed arithmetic operators for integers
+&nbsp;&nbsp;1. `+` (unary)
+&nbsp;&nbsp;2. `-` (unary)
+&nbsp;&nbsp;3. `+` (binary)
+&nbsp;&nbsp;4. `-` (binary)
+&nbsp;&nbsp;5. `*` (binary)
+&nbsp;&nbsp;6. `div`
+&nbsp;&nbsp;7. `mod`
+
+III. Arithmetic for unsigned integers
+&nbsp;&nbsp;1. `+`, `-`, `*` for uint
+&nbsp;&nbsp;2. `div`, `mod` for uint
+
+IV. Bitwise operations and shifts
+&nbsp;&nbsp;1. `not`
+&nbsp;&nbsp;2. `and`
+&nbsp;&nbsp;3. `or`
+&nbsp;&nbsp;4. `xor`
+&nbsp;&nbsp;5. `shr`
+&nbsp;&nbsp;6. `shl`
+&nbsp;&nbsp;7. `ashr`
+
+V. Compound assignment operators for integers
+&nbsp;&nbsp;1. `+=`
+&nbsp;&nbsp;2. `-=`
+&nbsp;&nbsp;3. `*=`
+
+VI. Floating-point arithmetic
+&nbsp;&nbsp;1. Unary `+` and `-`
+&nbsp;&nbsp;2. Binary `+`, `-`, `*`, `/`
+&nbsp;&nbsp;3. `+=`, `-=`, `*=`, `/=`
+
+VII. Wrap-around arithmetic
+&nbsp;&nbsp;1. `+%`
+&nbsp;&nbsp;2. `-%`
+&nbsp;&nbsp;3. `*%`
+&nbsp;&nbsp;4. `/%`
+&nbsp;&nbsp;5. `%%`
+
+VIII. Practical recipes
+&nbsp;&nbsp;1. Round-robin task scheduler
+&nbsp;&nbsp;2. Parity check via a bit mask
+&nbsp;&nbsp;3. Saturating counter
+&nbsp;&nbsp;4. Combining hashes without overflow risk
+&nbsp;&nbsp;5. A set of bit flags
+
+IX. Quick reference table
+
+X. Summary: which procedure to choose
 
 ---
 
-## 1. Ordinal Helpers
+## I. Ordinal arithmetic: succ, pred, inc, dec
 
-These four procedures work on any **ordinal type** — integers, characters, booleans, and enumerations. "Ordinal" means the type has a well-defined, finite, ordered sequence of values.
-
----
-
-### `succ[T: Ordinal, V: SomeInteger](x: T, y: V = 1): T`
-
-Returns the `y`-th **successor** of `x` — the value that comes `y` steps *after* `x` in the ordinal sequence. The default step is 1. Raises `OverflowDefect` at runtime (or a compile-time error for constants) if the result would fall outside the type's range.
-
-**When to use**: anywhere you need to advance an ordinal value by an arbitrary step and want overflow to be caught explicitly. For simple `+1` on a plain integer, `inc` is more idiomatic.
+### 1. `succ`
 
 ```nim
-assert succ(5) == 6          # one step forward
-assert succ(5, 3) == 8       # three steps forward
-assert succ('a') == 'b'      # works on char too
-assert succ(true) == ???     # OverflowDefect: bool has no successor after true
+proc succ*[T: Ordinal, V: SomeInteger](x: T, y: V = 1): T
+```
+
+**What it does.** Returns the `y`-th successor of the value `x` within its ordinal type (by default — the next value, `y = 1`). Works for any `Ordinal` type: integers, `char`, `bool`, `enum`. If the result exceeds the upper bound of the type's range (for example, `succ(high(int8))`), `OverflowDefect` is raised; for constant expressions, the compiler produces an error already at compile time.
+
+**Implementation notes.** The procedure is marked `{.magic: "Succ".}` — the actual code is generated by the compiler directly as a machine addition instruction with overflow checking; the Nim body is used only for documentation.
+
+**Parameter list:**
+- `x: T` — the immutable source value of any ordinal type.
+- `y: V` — how many steps to move forward, defaults to `1`; can be negative, in which case `succ` effectively acts like `pred`.
+
+**Examples:**
+
+```nim
+assert succ(5) == 6
+assert succ(5, 3) == 8
+assert succ('a') == 'b'
+doAssertRaises(OverflowDefect):
+  discard succ(high(int8))
 ```
 
 ---
 
-### `pred[T: Ordinal, V: SomeInteger](x: T, y: V = 1): T`
-
-Returns the `y`-th **predecessor** of `x` — the value `y` steps *before* `x`. Raises `OverflowDefect` if the result would underflow.
+### 2. `pred`
 
 ```nim
-assert pred(5) == 4          # one step back
-assert pred(5, 3) == 2       # three steps back
-assert pred('z') == 'y'
+proc pred*[T: Ordinal, V: SomeInteger](x: T, y: V = 1): T
+```
+
+**What it does.** Returns the `y`-th predecessor of the value `x` (by default — the previous value). Symmetric to `succ`: exceeding the lower bound of the type's range raises `OverflowDefect`.
+
+**Implementation notes.** Also `{.magic: "Pred".}` — a direct machine subtraction instruction with overflow checking.
+
+**Parameter list:**
+- `x: T` — the source value of an ordinal type.
+- `y: V` — how many steps to move back, defaults to `1`.
+
+**Examples:**
+
+```nim
+assert pred(5) == 4
+assert pred(5, 3) == 2
+doAssertRaises(OverflowDefect):
+  discard pred(low(uint8))
 ```
 
 ---
 
-### `inc[T: Ordinal, V: SomeInteger](x: var T, y: V = 1)`
+### 3. `inc`
 
-**Mutates** `x` in place by advancing it `y` steps. Equivalent to `x = succ(x, y)`. Raises `OverflowDefect` on overflow.
+```nim
+proc inc*[T: Ordinal, V: SomeInteger](x: var T, y: V = 1)
+```
+
+**What it does.** The mutating version of `succ` — increases the variable `x` in place instead of returning a new value. It is shorthand for `x = succ(x, y)`. The overflow conditions are the same as for `succ`.
+
+**Parameter list:**
+- `x: var T` — the mutable variable of an ordinal type.
+- `y: V` — the increment amount, defaults to `1`.
+
+**Examples:**
 
 ```nim
 var i = 2
-inc(i)        # i == 3
-inc(i, 3)     # i == 6
+inc(i)
+assert i == 3
+inc(i, 3)
+assert i == 6
 ```
-
-`inc` and `dec` are the idiomatic Nim way to advance loop counters and ordinal state variables. They communicate intent more clearly than `i += 1` for non-numeric ordinals.
 
 ---
 
-### `dec[T: Ordinal, V: SomeInteger](x: var T, y: V = 1)`
+### 4. `dec`
 
-**Mutates** `x` in place by retreating it `y` steps. Equivalent to `x = pred(x, y)`. Raises `OverflowDefect` on underflow.
+```nim
+proc dec*[T: Ordinal, V: SomeInteger](x: var T, y: V = 1)
+```
+
+**What it does.** The mutating version of `pred` — decreases the variable `x` in place. Shorthand for `x = pred(x, y)`.
+
+**Parameter list:**
+- `x: var T` — the mutable variable of an ordinal type.
+- `y: V` — the decrement amount, defaults to `1`.
+
+**Examples:**
 
 ```nim
 var i = 2
-dec(i)        # i == 1
-dec(i, 3)     # i == -2
+dec(i)
+assert i == 1
+dec(i, 3)
+assert i == -2
 ```
 
 ---
 
-## 2. Signed Integer Arithmetic
+## II. Signed arithmetic operators for integers
 
-All operators in this section work on `int`, `int8`, `int16`, `int32`, and `int64`. When overflow checking is enabled (the default in debug builds), exceeding the type's range raises `OverflowDefect`.
+This group covers `int`, `int8`, `int16`, `int32`, `int64` — each operator has a separate overload for each of these five types, all implementing the same semantics, and are shown below on the `int` type.
 
----
-
-### Unary `+x`
+### 1. `+` (unary)
 
 ```nim
 proc `+`*(x: int): int
 ```
 
-Returns `x` unchanged. The unary plus is a no-op provided for symmetry with unary minus and to satisfy syntactic contexts that require an expression.
+**What it does.** Unary plus, does not change the value — it exists only for symmetry with unary minus and to explicitly indicate a sign in expressions like `+5`.
+
+**Examples:**
 
 ```nim
-let x = +42    # x == 42
+assert +5 == 5
+assert `+`(-5) == -5
 ```
 
 ---
 
-### Unary `-x`
+### 2. `-` (unary)
 
 ```nim
 proc `-`*(x: int): int
 ```
 
-Returns the **arithmetic negation** of `x`. For signed integers: `-x == 0 - x`. Note that negating `low(int)` (the most negative value) overflows, since its positive counterpart does not fit.
+**What it does.** Negates `x`. Edge case: for `int64`, unary minus has a separate overload with the magic `"UnaryMinusI64"`, since `-low(int64)` does not fit in `int64` and must raise `OverflowDefect` rather than silently overflow.
+
+**Examples:**
 
 ```nim
-assert -7 == -7
-assert -(-7) == 7
-# -low(int8) would raise OverflowDefect in checked mode
+assert -5 == 0 - 5
+assert -(-5) == 5
+doAssertRaises(OverflowDefect):
+  discard -low(int64)
 ```
 
 ---
 
-### `x + y` (binary)
+### 3. `+` (binary)
 
 ```nim
 proc `+`*(x, y: int): int
 ```
 
-Standard **addition**. The result has the same type as the operands. Overflow is checked in debug builds.
+**What it does.** Adds two integers. Raises `OverflowDefect` if the sum falls outside the type's range.
+
+**Examples:**
 
 ```nim
-assert 3 + 4 == 7
-assert 127'i8 + 1'i8  # OverflowDefect in checked mode
+assert 2 + 3 == 5
+doAssertRaises(OverflowDefect):
+  discard high(int8) + 1'i8
 ```
 
 ---
 
-### `x - y` (binary)
+### 4. `-` (binary)
 
 ```nim
 proc `-`*(x, y: int): int
 ```
 
-Standard **subtraction**. Overflow is checked.
+**What it does.** Subtracts `y` from `x`. Like addition, raises `OverflowDefect` when the result falls outside the type's range.
+
+**Examples:**
 
 ```nim
-assert 10 - 3 == 7
-assert -128'i8 - 1'i8  # OverflowDefect in checked mode
+assert 5 - 3 == 2
+doAssertRaises(OverflowDefect):
+  discard low(int8) - 1'i8
 ```
 
 ---
 
-### `x * y`
+### 5. `*` (binary)
 
 ```nim
 proc `*`*(x, y: int): int
 ```
 
-Standard **multiplication**. Overflow is checked.
+**What it does.** Multiplies two integers, with the same overflow check.
+
+**Examples:**
 
 ```nim
-assert 6 * 7 == 42
+assert 3 * 4 == 12
+doAssertRaises(OverflowDefect):
+  discard high(int32) * 2'i32
 ```
 
 ---
 
-## 3. Integer Division and Modulo
-
-These operators implement **truncation-towards-zero** semantics — the same as C's `/` and `%`. The sign of the result follows from the signs of the operands in a specific way; see the tables below.
-
----
-
-### `x div y`
+### 6. `div`
 
 ```nim
 proc `div`*(x, y: int): int
 ```
 
-Computes the **integer quotient**, truncating towards zero. This is approximately `trunc(x / y)` as a real-number division.
+**What it does.** Integer division truncating toward zero — the result is always rounded toward zero, not downward. This is what distinguishes `div` from `floorDiv` in the `math` module. Division by `0` raises `DivByZeroDefect`.
 
-Division by zero raises `DivByZeroDefect`.
+**Implementation notes.** A rough equivalent is `math.trunc(x / y).int`, but without an intermediate pass through floating-point numbers and without loss of precision on large values.
 
-| x | y | x div y | Explanation |
-|---|---|---------|-------------|
-| 7 | 3 | 2 | 7 / 3 = 2.33… → truncate to 2 |
-| -7 | 3 | -2 | -7 / 3 = -2.33… → truncate to -2 |
-| 7 | -3 | -2 | 7 / -3 = -2.33… → truncate to -2 |
-| -7 | -3 | 2 | -7 / -3 = 2.33… → truncate to 2 |
+**Examples:**
 
 ```nim
+assert (1 div 2) == 0
 assert (7 div 3) == 2
 assert (-7 div 3) == -2
 assert (7 div -3) == -2
 assert (-7 div -3) == 2
+doAssertRaises(DivByZeroDefect):
+  discard 7 div 0
 ```
 
 ---
 
-### `x mod y`
+### 7. `mod`
 
 ```nim
 proc `mod`*(x, y: int): int
 ```
 
-Computes the **remainder** after `div`. Defined as `x - (x div y) * y`, so the sign of the result always matches the sign of `x` (the dividend), regardless of the sign of `y`.
+**What it does.** The remainder of integer division, consistent with `div` via the identity `x == (x div y) * y + (x mod y)`. The sign of the result always matches the sign of `x` (unlike the mathematical modulo, where the sign matches `y`). Division by `0` raises `DivByZeroDefect`.
 
-Division by zero raises `DivByZeroDefect`.
-
-| x | y | x mod y | Check: x - (x div y)*y |
-|---|---|---------|------------------------|
-| 7 | 5 | 2 | 7 - 2*5 = 2 |
-| -7 | 5 | -2 | -7 - (-2)*5 = -7+10 = … wait: -7 div 5 = -1, so -7 - (-1)*5 = -7+5 = -2 |
-| 7 | -5 | 2 | 7 div -5 = -1, 7 - (-1)*(-5) = 7-5 = 2 |
-| -7 | -5 | -2 | -7 div -5 = 1, -7 - 1*(-5) = -7+5 = -2 |
+**Examples:**
 
 ```nim
 assert (7 mod 5) == 2
 assert (-7 mod 5) == -2
 assert (7 mod -5) == 2
 assert (-7 mod -5) == -2
-```
-
-> **Gotcha**: this is *not* the mathematical modulo (which is always non-negative). For a non-negative result use `floorMod` from `std/math`.
-
----
-
-## 4. Bitwise Operations (Signed)
-
-These operate on the binary representation of the value. For signed integers the two's complement representation is used.
-
----
-
-### `not x`
-
-```nim
-proc `not`*(x: int): int
-```
-
-**Bitwise complement** — flips every bit. Equivalent to `-x - 1` in two's complement.
-
-```nim
-assert not 0'u8 == 255         # all bits set
-assert not 0'i8 == -1          # two's complement: all bits set = -1
-assert not 1000'u16 == 64535
-assert not 1000'i16 == -1001   # -(1000+1)
+doAssertRaises(DivByZeroDefect):
+  discard 7 mod 0
 ```
 
 ---
 
-### `x and y`
+## III. Arithmetic for unsigned integers
 
-```nim
-proc `and`*(x, y: int): int
-```
-
-**Bitwise AND** — a result bit is 1 only if both corresponding input bits are 1. Commonly used to **mask off** bits.
-
-```nim
-assert (0b0011 and 0b0101) == 0b0001   # only bit 0 is set in both
-assert (0xFF and 0x0F) == 0x0F         # keep lower nibble only
-```
-
----
-
-### `x or y`
-
-```nim
-proc `or`*(x, y: int): int
-```
-
-**Bitwise OR** — a result bit is 1 if *at least one* corresponding input bit is 1. Commonly used to **set** specific bits.
-
-```nim
-assert (0b0011 or 0b0101) == 0b0111
-assert (flags or 0b0100) == flags with bit 2 set
-```
-
----
-
-### `x xor y`
-
-```nim
-proc `xor`*(x, y: int): int
-```
-
-**Bitwise XOR** (exclusive or) — a result bit is 1 if the corresponding input bits *differ*. Commonly used to **toggle** bits or check for differences.
-
-```nim
-assert (0b0011 xor 0b0101) == 0b0110
-assert (x xor x) == 0    # XOR with itself always produces zero
-```
-
----
-
-## 5. Bit Shifts (Signed)
-
-### `x shr y`
-
-```nim
-proc `shr`*(x: int, y: SomeInteger): int
-```
-
-**Arithmetic shift right** (sign-extending). Shifts the bits of `x` rightward by `y` positions. Vacant bit positions on the *left* are filled with **the sign bit** — so negative numbers remain negative and positive numbers remain positive.
-
-`y` is taken modulo `sizeof(x) * 8` (e.g. for `int32`, `shr 35` acts as `shr 3`).
-
-> **Note**: operator precedence differs from C. In Nim `a + b shr c` parses as `a + (b shr c)`, because `shr` has lower precedence than `+`.
-
-```nim
-assert 16 shr 2 == 4          # 0b10000 → 0b00100
-assert -16 shr 2 == -4        # sign bit preserved
-assert 0b1000_0000'i8 shr 4 == 0b1111_1000'i8  # sign-extension fills with 1s
-assert -1 shr 5 == -1         # shifting -1 right always yields -1
-```
-
-When `nimOldShiftRight` is defined, `shr` on signed integers performs a **logical** (zero-filling) shift instead and is deprecated.
-
-For unsigned integers, `shr` always performs a **logical** (zero-filling) shift — vacant bits are filled with 0.
-
----
-
-### `ashr(x, y)` — Explicit Arithmetic Shift Right
-
-```nim
-proc ashr*(x: int, y: SomeInteger): int
-```
-
-Identical in behaviour to `shr` for signed integers (arithmetic, sign-extending). Provided as a **named function** (not an operator) for cases where operator syntax would be ambiguous or when you want to make the intent explicit in code.
-
-```nim
-assert ashr(0b0001_0000'i8, 2) == 0b0000_0100'i8
-assert ashr(0b1000_0000'i8, 1) == 0b1100_0000'i8  # sign bit copied
-assert ashr(0b1000_0000'i8, 8) == 0b1000_0000'i8  # shift ≥ width: all sign bits
-```
-
----
-
-### `x shl y`
-
-```nim
-proc `shl`*(x: int, y: SomeInteger): int
-```
-
-**Shift left**. Shifts bits leftward by `y` positions; vacated positions on the right are filled with 0. Equivalent to multiplication by 2^y (without overflow checking). `y` is taken modulo `sizeof(x) * 8`.
-
-```nim
-assert 1'i32 shl 4 == 16          # 0b1 → 0b10000
-assert 1'i64 shl 4 == 16
-assert 0b0000_0001'i8 shl 7 == 0b1000_0000'i8   # sets the sign bit
-```
-
----
-
-## 6. Unsigned Integer Arithmetic
-
-All operators in this section work on `uint`, `uint8`, `uint16`, `uint32`, `uint64`. Unsigned arithmetic **never raises overflow errors** — it wraps modulo 2^N where N is the bit width.
-
----
-
-### `x + y`, `x - y`, `x * y` (unsigned)
+### 1. `+`, `-`, `*` for uint
 
 ```nim
 proc `+`*(x, y: uint): uint
@@ -373,363 +317,513 @@ proc `-`*(x, y: uint): uint
 proc `*`*(x, y: uint): uint
 ```
 
-Standard unsigned addition, subtraction, and multiplication. All wrap silently on overflow/underflow.
+**What it does.** The same three operations as in Section II, but for `uint`/`uint8`/`uint16`/`uint32`/`uint64`. The key difference from the signed versions: unsigned arithmetic in Nim performs modular (wrap-around) addition/subtraction/multiplication and never raises `OverflowDefect` — an overflow simply "wraps" around the type's range, as in C.
+
+**Implementation notes.** The magics `"AddU"`, `"SubU"`, `"MulU"` correspond to unsigned machine instructions of the processor, for which the very notion of overflow is undefined at the hardware level — which is why the compiler does not insert a check.
+
+**Examples:**
 
 ```nim
-assert 255'u8 + 1'u8 == 0'u8    # wraps around
-assert 0'u8 - 1'u8 == 255'u8    # underflow wraps to max
-assert 200'u8 * 2'u8 == 144'u8  # 400 mod 256 = 144
+assert 3'u8 + 4'u8 == 7'u8
+assert 0'u8 - 1'u8 == 255'u8       # wraps downward across the range boundary
+assert high(uint8) + 1'u8 == 0'u8 # wraps upward across the range boundary
 ```
 
 ---
 
-### `x div y` (unsigned)
+### 2. `div`, `mod` for uint
 
 ```nim
 proc `div`*(x, y: uint): uint
-```
-
-Unsigned integer division — always truncates towards zero (which for non-negative numbers is the same as towards negative infinity). No sign complications. Raises `DivByZeroDefect` on division by zero.
-
-```nim
-assert 7'u div 3'u == 2'u
-```
-
----
-
-### `x mod y` (unsigned)
-
-```nim
 proc `mod`*(x, y: uint): uint
 ```
 
-Unsigned remainder. Result is always in `[0, y)`. Raises `DivByZeroDefect` on zero divisor.
+**What it does.** Integer division and remainder for unsigned numbers. Since both operands are non-negative by definition of the type, truncation toward zero and truncation downward coincide here, and the sign of the remainder is not a question at all — the result is always non-negative. Division by `0` still raises `DivByZeroDefect`.
+
+**Examples:**
 
 ```nim
-assert 7'u mod 5'u == 2'u
+assert 7'u8 div 2'u8 == 3'u8
+assert 7'u8 mod 2'u8 == 1'u8
+doAssertRaises(DivByZeroDefect):
+  discard 7'u8 div 0'u8
 ```
 
 ---
 
-## 7. Unsigned Bit Operations and Shifts
+## IV. Bitwise operations and shifts
 
-### `not x` (unsigned)
+### 1. `not`
 
 ```nim
-proc `not`*(x: uint): uint
+proc `not`*(x: int): int
 ```
 
-Bitwise complement. For unsigned types the result is simply `(2^N - 1) xor x`, which is always non-negative and fits in the type.
+**What it does.** Bitwise complement (inversion of all bits) of the number `x`. Exists for all signed and unsigned integer types. The edge case is clearly visible on small types: `not 0'u8` gives `255`, since in an unsigned byte all bits become ones, whereas `not 0'i8` gives `-1`, because the same bit pattern `0b1111_1111` is read as minus one in the two's-complement representation of the signed type.
+
+**Examples:**
 
 ```nim
-assert not 0'u8 == 255'u8
-assert not 255'u8 == 0'u8
-```
-
----
-
-### `x and y`, `x or y`, `x xor y` (unsigned)
-
-Same bitwise semantics as for signed types. Operate on the raw binary representation.
-
-```nim
-assert (0xFF'u8 and 0x0F'u8) == 0x0F'u8
-assert (0xF0'u8 or 0x0F'u8) == 0xFF'u8
-assert (0xFF'u8 xor 0xFF'u8) == 0x00'u8
+assert not 0'u8 == 255
+assert not 0'i8 == -1
+assert not 1000'u16 == 64535
+assert not 1000'i16 == -1001
 ```
 
 ---
 
-### `x shr y` (unsigned)
+### 2. `and`
 
 ```nim
-proc `shr`*(x: uint, y: SomeInteger): uint
+proc `and`*(x, y: int): int
 ```
 
-**Logical shift right** (zero-filling). Always fills vacated positions with 0, regardless of the value of the most significant bit. This is the natural behaviour for unsigned types.
+**What it does.** Bitwise AND: in the resulting number a bit is set only where it is set in both `x` and `y` simultaneously. Often used as a mask to extract specific bits or to check parity (see the "Practical Recipes" section).
+
+**Examples:**
 
 ```nim
-assert 0xFF'u8 shr 4 == 0x0F'u8   # upper nibble gone, padded with 0
-```
-
----
-
-### `x shl y` (unsigned)
-
-```nim
-proc `shl`*(x: uint, y: SomeInteger): uint
-```
-
-**Shift left**, zero-filling on the right. Equivalent to multiplication by 2^y, wrapping on overflow.
-
-```nim
-assert 1'u8 shl 7 == 128'u8
-assert 3'u8 shl 6 == 192'u8
+assert (0b0011 and 0b0101) == 0b0001
+assert (0b0111 and 0b1100) == 0b0100
 ```
 
 ---
 
-## 8. Compound Assignment Operators
+### 3. `or`
 
-These mutate the left operand in place. They are thin wrappers — `x += y` desugars to the same code as `x = x + y`.
+```nim
+proc `or`*(x, y: int): int
+```
+
+**What it does.** Bitwise OR: a bit is set if it is set in at least one of the operands. Typically used to set flags in a bit mask.
+
+**Examples:**
+
+```nim
+assert (0b0011 or 0b0101) == 0b0111
+assert (0b0111 or 0b1100) == 0b1111
+```
 
 ---
 
-### `x += y` — Add and Assign
+### 4. `xor`
+
+```nim
+proc `xor`*(x, y: int): int
+```
+
+**What it does.** Bitwise exclusive OR: a bit is set if it is set in exactly one of the operands, but not in both at once. Often used to toggle bits and to combine hash values.
+
+**Examples:**
+
+```nim
+assert (0b0011 xor 0b0101) == 0b0110
+assert (0b0111 xor 0b1100) == 0b1011
+```
+
+---
+
+### 5. `shr`
+
+```nim
+proc `shr`*(x: int, y: SomeInteger): int
+```
+
+**What it does.** Shifts the bits of `x` right by `y` positions. The value of `y` is taken modulo `sizeof(x) * 8`, meaning `15'i32 shr 35` is equivalent to `15'i32 shr 3`. For signed types (when the `nimOldShiftRight` compile-time flag is not set), the shift is arithmetic: the bits freed on the left are filled with a copy of the sign bit, so shifting a negative number right preserves its sign.
+
+**Implementation notes.** By default, `shr` for signed types is implemented via the same `"AshrI"` magic as the separate `ashr` function — meaning in current Nim versions this is, in effect, the same machine code. The only difference is that the behavior of `shr` depends on the `nimOldShiftRight` compile-time flag (setting it reverts `shr` to the legacy logical shift without sign preservation), whereas `ashr` is guaranteed to be arithmetic regardless of compile-time flags. For unsigned types, `shr` is implemented via the `"ShrI"` magic — a logical shift filling the freed bits with zeros, since `uint` has no sign bit that would need to be preserved.
+
+**Parameter list:**
+- `x` — the value to shift, of any signed or unsigned integer type.
+- `y: SomeInteger` — the number of shift positions, taken modulo the bit width of `x`.
+
+**Examples:**
+
+```nim
+assert 0b0001_0000'i8 shr 2 == 0b0000_0100'i8
+assert 0b1000_0000'i8 shr 4 == 0b1111_1000'i8   # sign bit preserved
+assert -1 shr 5 == -1
+assert 16 shr 2 == 4
+```
+
+---
+
+### 6. `shl`
+
+```nim
+proc `shl`*(x: int, y: SomeInteger): int
+```
+
+**What it does.** Shifts the bits of `x` left by `y` positions; the bits freed on the right are filled with zeros. The value of `y`, as with `shr`, is taken modulo `sizeof(x) * 8`. Works the same way for signed and unsigned types, since filling with zeros on the right has nothing to do with the number's sign.
+
+**Examples:**
+
+```nim
+assert 1'i32 shl 4 == 0x0000_0010
+assert 1'i64 shl 4 == 0x0000_0000_0000_0010
+```
+
+---
+
+### 7. `ashr`
+
+```nim
+proc ashr*(x: int, y: SomeInteger): int
+```
+
+**What it does.** An explicit arithmetic right shift: the bits freed on the left are always filled with a copy of the sign (most significant) bit, regardless of compile-time flags. Unlike `shr`, this is not an operator but an ordinary procedure, so it is only called as a regular function call, not with infix notation.
+
+**Implementation notes.** Uses the same `"AshrI"` magic as `shr` by default — `ashr` exists to explicitly fix the arithmetic shift semantics in places where independence from the `nimOldShiftRight` flag matters.
+
+**Examples:**
+
+```nim
+assert ashr(0b0001_0000'i8, 2) == 0b0000_0100'i8
+assert ashr(0b1000_0000'i8, 8) == 0b1000_0000'i8
+assert ashr(0b1000_0000'i8, 1) == 0b1100_0000'i8
+```
+
+---
+
+## V. Compound assignment operators for integers
+
+### 1. `+=`
 
 ```nim
 proc `+=`*[T: SomeInteger](x: var T, y: T)
 ```
 
-Increments `x` by `y`. Works on all integer types (signed and unsigned). For floating-point types a separate overload exists (see §9).
+**What it does.** Increases `x` by `y` in place — shorthand for `x = x + y`, with the same overflow conditions as binary `+`.
+
+**Implementation notes.** Implemented via the same `"Inc"` magic as the `inc` procedure — the compiler substitutes the same machine addition operation with overflow checking.
+
+**Examples:**
 
 ```nim
-var n = 10
-n += 5    # n == 15
+var a = 5
+a += 3
+assert a == 8
 ```
 
 ---
 
-### `x -= y` — Subtract and Assign
+### 2. `-=`
 
 ```nim
 proc `-=`*[T: SomeInteger](x: var T, y: T)
 ```
 
-Decrements `x` by `y`.
+**What it does.** Decreases `x` by `y` in place — shorthand for `x = x - y`.
+
+**Examples:**
 
 ```nim
-var n = 10
-n -= 3    # n == 7
+var a = 5
+a -= 3
+assert a == 2
 ```
 
 ---
 
-### `x *= y` — Multiply and Assign
+### 3. `*=`
 
 ```nim
-proc `*=`*[T: SomeInteger](x: var T, y: T)
+proc `*=`*[T: SomeInteger](x: var T, y: T) {.inline.} =
+  x = x * y
 ```
 
-Multiplies `x` by `y` in place. Implemented as `x = x * y`.
+**What it does.** Multiplies `x` by `y` in place.
+
+**Implementation notes.** Unlike `+=`/`-=`, there is no separate compiler magic here — the procedure is marked only `{.inline.}` and literally consists of the body `x = x * y`, i.e. it reuses the already overflow-checked `*` operator. Notably, the module has no `/=` procedure for integers at all: the `/` operator is not defined for integer types (it exists only for floating-point numbers), so division with assignment for integers must be written explicitly via `div`: `x = x div y`.
+
+**Examples:**
 
 ```nim
-var n = 6
-n *= 7    # n == 42
+var a = 5
+a *= 3
+assert a == 15
 ```
 
 ---
 
-## 9. Floating-Point Arithmetic
+## VI. Floating-point arithmetic
 
-All operators below work on both `float` (= `float64`, 64-bit IEEE 754 double precision) and `float32` (32-bit single precision). IEEE 754 rules apply: operations on `NaN` produce `NaN`; overflow produces `Inf` or `-Inf`; division by zero also produces `Inf`/`-Inf` rather than raising an exception.
+All procedures in this section exist in two overloads — for `float32` and for `float`/`float64` — and, unlike integer arithmetic, never raise `OverflowDefect`: when the result exceeds the range, it becomes `Inf`/`-Inf`, and undefined operations like `0.0 / 0.0` produce `NaN`.
 
----
-
-### Unary `+x`, `-x` (float)
+### 1. Unary `+` and `-`
 
 ```nim
 proc `+`*(x: float): float
 proc `-`*(x: float): float
 ```
 
-Unary plus (no-op) and negation. Negation flips the sign bit — it correctly handles `+0.0`, `-0.0`, `Inf`, `-Inf`, and `NaN` per IEEE 754.
+**What it does.** Unary plus does not change the value; unary minus negates the floating-point number, including correct handling of `+0.0`/`-0.0` and infinities.
+
+**Examples:**
 
 ```nim
-assert -3.14 == -3.14
-assert -(-3.14) == 3.14
-assert -(Inf) == -Inf
+assert +3.5 == 3.5
+assert -3.5 == 0.0 - 3.5
 ```
 
 ---
 
-### `x + y`, `x - y`, `x * y` (float)
-
-Standard IEEE 754 addition, subtraction, multiplication. The result is a rounded real-number result.
+### 2. Binary `+`, `-`, `*`, `/`
 
 ```nim
-assert 0.1 + 0.2 != 0.3      # classic floating-point rounding
-assert 1.0 + Inf == Inf
-assert Inf - Inf == NaN
-```
-
----
-
-### `x / y` (float)
-
-```nim
+proc `+`*(x, y: float): float
+proc `-`*(x, y: float): float
+proc `*`*(x, y: float): float
 proc `/`*(x, y: float): float
 ```
 
-IEEE 754 floating-point division. Division by zero produces `Inf`, `-Inf`, or `NaN` (0.0/0.0) rather than raising an exception.
+**What it does.** Standard floating-point operations per the IEEE 754 standard. Division by `0.0` does not raise an exception (unlike integer `div`), but produces `Inf`, `-Inf`, or `NaN` depending on the sign and value of the dividend.
+
+**Examples:**
 
 ```nim
-assert 1.0 / 2.0 == 0.5
+assert 2.5 + 1.5 == 4.0
+assert 5.0 / 2.0 == 2.5
 assert 1.0 / 0.0 == Inf
-assert -1.0 / 0.0 == -Inf
-assert 0.0 / 0.0 != 0.0 / 0.0   # NaN != NaN
-```
-
-> For integer (truncating) division use `div`; `/` is only defined for floating-point types.
-
----
-
-### Floating-point compound assignment: `+=`, `-=`, `*=`
-
-```nim
-proc `+=`*[T: float|float32|float64](x: var T, y: T)
-proc `-=`*[T: float|float32|float64](x: var T, y: T)
-proc `*=`*[T: float|float32|float64](x: var T, y: T)
-```
-
-Mutate `x` in place. Inline wrappers around the base operators.
-
-```nim
-var f = 1.0
-f += 0.5    # f == 1.5
-f *= 2.0    # f == 3.0
-f -= 0.1    # f == 2.9 (approximately)
 ```
 
 ---
 
-### `/=` — Divide and Assign (float)
+### 3. `+=`, `-=`, `*=`, `/=`
 
 ```nim
-proc `/=`*(x: var float64, y: float64)
-proc `/=`*[T: float|float32](x: var T, y: T)
+proc `+=`*[T: float|float32|float64](x: var T, y: T) {.inline.} =
+  x = x + y
+proc `-=`*[T: float|float32|float64](x: var T, y: T) {.inline.} =
+  x = x - y
+proc `*=`*[T: float|float32|float64](x: var T, y: T) {.inline.} =
+  x = x * y
+proc `/=`*(x: var float64, y: float64) {.inline.} =
+  x = x / y
 ```
 
-Divides `x` by `y` in place.
+**What it does.** Compound assignment operators for floating-point numbers — shorthand for `x = x + y` and the analogous operations. Unlike integer `+=`/`-=`, all four operators here are implemented uniformly: as `{.inline.}` procedures with the body `x = x op y`, without separate compiler magic, since floating-point numbers do not need an overflow check.
+
+**Examples:**
 
 ```nim
-var f = 10.0
-f /= 4.0    # f == 2.5
-```
-
----
-
-## 10. Wrapping Arithmetic Operators (`%`)
-
-These operators treat their operands as **unsigned** regardless of the declared type and always wrap on overflow/underflow without raising any exception. They are available for all signed integer types (`int`, `int8`, `int16`, `int32`, `int64`).
-
-The `%` suffix is a visual reminder that the operation is *modular* (no overflow defect, ever).
-
----
-
-### `x +% y` — Wrapping Addition
-
-```nim
-proc `+%`*(x, y: int): int
-```
-
-Adds `x` and `y` as if they were unsigned, then reinterprets the bit pattern as the signed type. Equivalent to `cast[int](cast[uint](x) + cast[uint](y))`.
-
-```nim
-assert high(int8) +% 1'i8 == low(int8)   # 127 + 1 = -128 (wraps)
-assert -1'i8 +% 1'i8 == 0'i8
-```
-
-**Use case**: hash functions, checksum accumulators, and any arithmetic where you deliberately want two's complement wrap-around without an exception.
-
----
-
-### `x -% y` — Wrapping Subtraction
-
-```nim
-proc `-%`*(x, y: int): int
-```
-
-Subtracts without overflow checking, treating operands as unsigned.
-
-```nim
-assert low(int8) -% 1'i8 == high(int8)   # -128 - 1 = 127 (wraps)
-assert 0'i8 -% 1'i8 == -1'i8             # same as regular subtraction here
+var price = 10.0
+price *= 1.2
+assert price == 12.0
+price /= 4.0
+assert price == 3.0
 ```
 
 ---
 
-### `x *% y` — Wrapping Multiplication
+## VII. Wrap-around arithmetic
+
+All five operators in this section treat their operands as unsigned numbers regardless of their actual signed type, perform a modular operation, and never raise an overflow exception — the result is always truncated to the type's bit width. This is convenient for hash functions, pseudo-random number generators, and low-level code where overflow is an expected part of the algorithm rather than an error.
+
+### 1. `+%`
 
 ```nim
-proc `*%`*(x, y: int): int
+proc `+%`*(x, y: int): int {.inline.} =
+  cast[int](cast[uint](x) + cast[uint](y))
 ```
 
-Multiplies without overflow checking, treating operands as unsigned before multiplying.
+**What it does.** Adds `x` and `y` as if both were unsigned numbers, and returns the result back as a signed number of the same size — without any risk of `OverflowDefect`.
+
+**Implementation notes.** The implementation is literally "cast to uint, add modulo the bit width, cast back" — three `cast` operations, each of which does not change the number's bit representation but merely reinterprets it.
+
+**Examples:**
 
 ```nim
-assert 100'i8 *% 100'i8 == 16'i8   # 10000 mod 256 reinterpreted as int8
-```
-
----
-
-### `x /% y` — Wrapping Division
-
-```nim
-proc `/%`*(x, y: int): int
-```
-
-Divides treating both operands as unsigned. For non-negative values this is the same as `div`. The key difference appears when one or both values are negative (large unsigned numbers):
-
-```nim
-assert (-1'i8 /% 2'i8) == 127'i8
-# Because cast[uint8](-1) = 255, and 255 div 2 = 127
+assert high(int8) +% 1'i8 == low(int8)  # wraps around the range boundary
 ```
 
 ---
 
-### `x %% y` — Wrapping Modulo
+### 2. `-%`
 
 ```nim
-proc `%%`*(x, y: int): int
+proc `-%`*(x, y: int): int {.inline.} =
+  cast[int](cast[uint](x) - cast[uint](y))
 ```
 
-Computes the remainder treating both operands as unsigned. The result is always non-negative when interpreted as the signed type (within the unsigned range of the type).
+**What it does.** Subtracts `y` from `x` under the same unsigned modular rules as `+%`.
+
+**Examples:**
 
 ```nim
-assert (-7'i32 %% 5'i32) == 3'i32
-# cast[uint32](-7) = 4294967289, 4294967289 mod 5 = 3 (reinterpreted as int32: 3)
+assert low(int8) -% 1'i8 == high(int8)  # wraps around the range boundary
 ```
-
-> **Gotcha**: unlike `mod`, the result sign for `%%` comes from the *unsigned interpretation*, not the sign of `x`.
 
 ---
 
-## 11. Operator Precedence Quick Reference
+### 3. `*%`
 
-Nim's operator precedence for the operators in this module, from highest to lowest:
+```nim
+proc `*%`*(x, y: int): int {.inline.} =
+  cast[int](cast[uint](x) * cast[uint](y))
+```
 
-| Level | Operators | Notes |
-|-------|-----------|-------|
-| 9 (highest arithmetic) | unary `+`, unary `-`, `not` | Right-to-left |
-| 8 | `*`, `/`, `div`, `mod`, `shl`, `shr`, `%%`, `*%`, `/%` | Left-to-right |
-| 7 | `+`, `-`, `+%`, `-%`, `or`, `xor` | Left-to-right |
-| 6 | `and` | Left-to-right |
+**What it does.** Multiplies `x` and `y` under the unsigned modular rules.
 
-> **Important**: `shl` and `shr` have lower precedence than `+` in Nim, unlike in C. `a + b shl 2` means `a + (b shl 2)`, not `(a + b) shl 2`.
+**Examples:**
+
+```nim
+assert 200'i8 *% 2'i8 == cast[int8](cast[uint8](200'i8) * cast[uint8](2'i8))
+```
 
 ---
 
-## Summary Table
+### 4. `/%`
 
-| Operator / Function | Types | Overflow behaviour | Notes |
-|---|---|---|---|
-| `succ`, `pred` | Any ordinal | `OverflowDefect` | Step can be > 1 |
-| `inc`, `dec` | Any ordinal (mut) | `OverflowDefect` | In-place |
-| Unary `+` | Signed int, float | — | No-op |
-| Unary `-` | Signed int, float | `OverflowDefect` on min int | Negation |
-| `+`, `-`, `*` | Signed int | `OverflowDefect` | Checked in debug |
-| `+`, `-`, `*` | Unsigned int | Wraps silently | Modular |
-| `+`, `-`, `*`, `/` | float32, float64 | IEEE 754 (Inf/NaN) | No exception |
-| `div`, `mod` | Signed int | `DivByZeroDefect` | Truncates to zero |
-| `div`, `mod` | Unsigned int | `DivByZeroDefect` | Always positive |
-| `not` | Int, uint | — | Bitwise complement |
-| `and`, `or`, `xor` | Int, uint | — | Bitwise |
-| `shr` | Signed int | — | Arithmetic (sign-extending) |
-| `shr` | Unsigned int | — | Logical (zero-filling) |
-| `ashr` | Signed int | — | Named form of arithmetic shr |
-| `shl` | Int, uint | — | Zero-fills right |
-| `+=`, `-=`, `*=` | Int, float | Same as base op | In-place |
-| `/=` | float only | IEEE 754 | In-place |
-| `+%`, `-%`, `*%` | Signed int | Never raises | Wrapping |
-| `/%`, `%%` | Signed int | Never raises | Unsigned-treating wrapping |
+```nim
+proc `/%`*(x, y: int): int {.inline.} =
+  cast[int](cast[uint](x) div cast[uint](y))
+```
+
+**What it does.** Integer division treating both operands as unsigned numbers. Useful when a signed variable holds a bit pattern that should logically be interpreted as unsigned (for example, a value obtained from a network protocol).
+
+**Examples:**
+
+```nim
+assert (-2) /% 2 == cast[int](high(uint) div 2'u + 1'u)
+```
+
+---
+
+### 5. `%%`
+
+```nim
+proc `%%`*(x, y: int): int {.inline.} =
+  cast[int](cast[uint](x) mod cast[uint](y))
+```
+
+**What it does.** The remainder of division, treating both operands as unsigned numbers — the unsigned counterpart of `/%`.
+
+**Examples:**
+
+```nim
+assert 10 %% 3 == 10 mod 3   # matches ordinary mod for non-negative numbers
+```
+
+---
+
+## VIII. Practical recipes
+
+### 1. Round-robin task scheduler
+
+```nim
+type
+  Scheduler = object
+    tasks: seq[string]
+    current: int
+
+proc next(s: var Scheduler): string =
+  ## Returns the next task and advances the pointer in a circle.
+  result = s.tasks[s.current]
+  s.current = (s.current + 1) mod len(s.tasks)
+
+var sched = Scheduler(tasks: @["A", "B", "C"], current: 0)
+echo next(sched)  # prints "A"
+echo next(sched)  # prints "B"
+echo next(sched)  # prints "C"
+echo next(sched)  # prints "A" — mod wrapped the pointer back to the start
+```
+
+---
+
+### 2. Parity check via a bit mask
+
+```nim
+proc isEven(x: int): bool =
+  ## Checks parity via the least significant bit instead of mod 2 division.
+  (x and 1) == 0
+
+assert isEven(4) == true
+assert isEven(7) == false
+```
+
+---
+
+### 3. Saturating counter
+
+```nim
+proc incSaturating(x: var int8, step: int8) =
+  ## Increases x by step, but stops at high(int8) instead of
+  ## raising OverflowDefect — a typical task for in-game health counters.
+  try:
+    inc(x, step)
+  except OverflowDefect:
+    x = high(int8)
+
+var health = 120'i8
+incSaturating(health, 20'i8)
+echo health  # prints 127 — saturation instead of an error
+```
+
+---
+
+### 4. Combining hashes without overflow risk
+
+```nim
+proc combineHash(a, b: int): int =
+  ## Combines two hashes via xor and wrap-around multiplication,
+  ## the way algorithms like the FNV hash typically do.
+  (a xor b) *% 16777619
+
+echo combineHash(123, 456)
+```
+
+---
+
+### 5. A set of bit flags
+
+```nim
+const
+  FlagRead = 1
+  FlagWrite = 2
+  FlagExec = 4
+
+var perms = 0
+perms = perms or FlagRead
+perms = perms or FlagWrite
+assert (perms and FlagExec) == 0        # flag not set
+perms = perms or FlagExec
+assert (perms and FlagExec) == FlagExec # flag set
+perms = perms and not FlagWrite         # clear the write flag
+assert (perms and FlagWrite) == 0
+```
+
+---
+
+## IX. Quick reference table
+
+| Task | Mutates the argument | What to use |
+|---|---|---|
+| Get the next/previous value | no | `succ`, `pred` |
+| Increase/decrease a variable in place | yes | `inc`, `dec`, `+=`, `-=` |
+| Add/subtract/multiply signed integers (with overflow checking) | no | `+`, `-`, `*` |
+| Add/subtract/multiply without exceptions on overflow | no | `+%`, `-%`, `*%` |
+| Integer division truncating toward zero | no | `div` |
+| Remainder of division with the sign matching the dividend | no | `mod` |
+| Division/remainder treating numbers as unsigned | no | `/%`, `%%` |
+| Test/set/clear one or more bits | no | `and`, `or`, `xor`, `not` |
+| Shift bits left | no | `shl` |
+| Shift bits right preserving the sign | no | `shr` (by default), `ashr` |
+| Shift bits right for unsigned numbers | no | `shr` for `uint` |
+| Floating-point arithmetic | no | `+`, `-`, `*`, `/` for `float` |
+| Compound assignment for floating-point numbers | yes | `+=`, `-=`, `*=`, `/=` |
+
+---
+
+## X. Summary: which procedure to choose
+
+- Need to find the neighboring value of an ordinal type without touching the variable → use `succ`/`pred`.
+- Need to modify a variable in place, one step forward/backward → use `inc`/`dec`.
+- Need to add/subtract/multiply integers with a guarantee that an overflow error will not go unnoticed → use the ordinary `+`, `-`, `*`.
+- Need arithmetic where overflow is expected behavior (hashes, generators, working with raw bits) → use `+%`, `-%`, `*%`, `/%`, `%%`.
+- Need integer division rounded toward zero → use `div`; need a remainder consistent with it → use `mod`.
+- Need to treat a value as unsigned for division/remainder regardless of its declared type → use `/%`/`%%`.
+- Need to work with individual bits (masks, flags, inversion) → use `and`, `or`, `xor`, `not`.
+- Need a left shift → `shl`; need a right shift that preserves the sign regardless of compile flags → `ashr`; need the ordinary right-shift operator → `shr`.
+- Need floating-point arithmetic → use `+`, `-`, `*`, `/` for `float`/`float32`, and for in-place assignment — `+=`, `-=`, `*=`, `/=`.
+- Need compound assignment for integers, but specifically division — remember that `/=` does not exist for integers; write `x = x div y` explicitly.

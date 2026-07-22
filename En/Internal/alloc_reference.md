@@ -1,652 +1,820 @@
-# Nim `alloc.nim` — Internal Allocator Reference
+# system/alloc.nim — Module Reference (Public API)
 
-> **Audience notice.** `alloc.nim` is Nim's *internal* low-level memory allocator. It is **not** a public API — it is part of the runtime library and is compiled directly into every Nim program. The functions described here are called transparently by `system.alloc`, `system.dealloc`, and the garbage collector. You would interact with this module directly only when working on the Nim runtime itself, a custom GC, or an embedded port without an OS allocator.
+> **Import:** no separate `import` is needed. `alloc.nim` is pulled into
+> `system.nim` via an `include` directive, so its procedures become part of
+> the `system` module and are available in any Nim program without an
+> explicit import.
+> **Scope:** the low-level heap allocator that backs both manual memory
+> management (`alloc`/`dealloc`) and the garbage collector.
 
----
+This file implements Nim's runtime-level memory allocator: a TLSF-like
+scheme for "big" blocks and an accumulator/free-cell scheme for "small"
+blocks inside page-sized chunks. What follows documents only the
+**publicly used layer** — the procedures ordinary Nim code calls
+(`alloc`, `dealloc`, `realloc`, `allocShared`, `getFreeMem`, and so on).
+The internal machinery (the TLSF `flBitmap`/`slBitmap` matrix, the AVL
+tree used for interval lookups, the `IntSet` of chunk starts, and the
+`MemRegion` structure itself) is not documented procedure-by-procedure —
+it gets only a summary overview in section VI.
 
-## Architecture Overview
-
-The allocator manages memory in page-aligned blocks called **chunks**. Two categories of chunk exist:
-
-- **Small chunks** — exactly one OS page (`PageSize`, typically 4 KB). Divided internally into fixed-size *cells* of the same size class. Reusing freed cells avoids page-level OS calls for the common case.
-- **Big chunks** — one or more pages. Managed with a **TLSF** (Two-Level Segregated Fit) free-list matrix for near-O(1) best-fit allocation.
-- **Huge chunks** — bigger than `MaxBigChunkSize`. Allocated and freed directly from the OS on every call.
-
-All allocations live inside a `MemRegion` — a self-contained heap. Thread-local regions share nothing with each other except through an explicit shared-heap path protected by a lock.
-
-### Three-path small allocation
-
-```
-alloc
- └─► rawAlloc
-       ├─ Path 1: No free chunk for this size class → request a new page from OS
-       ├─ Path 2: Free chunk exists, accumulator has room → bump acc pointer
-       └─ Path 3: Free chunk has a free-list cell → pop cell from free list  ← preferred
-```
-
-### Two-path small deallocation
-
-```
-dealloc
- └─► rawDealloc
-       ├─ We own this chunk → add cell to free list, maybe activate chunk
-       └─ Different thread owns this chunk → enqueue in sharedFreeLists (ARC/ORC)
-                                          → or mark in AVL tree (legacy GC)
-```
+General convention of the module: every operation has a "per-thread /
+shared" pair (`alloc` works on the current thread's heap, `allocShared`
+works on a heap reachable from any thread), and a `0` suffix means
+"zero the memory" (`alloc0`, `realloc0`, `allocShared0`).
 
 ---
 
-## Key Constants
+## Table of Contents
 
-| Constant | Meaning |
-|---|---|
-| `nimMinHeapPages` | Minimum number of pages to request from OS at once (default 128 = 0.5 MB). Overridable at compile time with `-d:nimMinHeapPages=N`. |
-| `SmallChunkSize` | Equal to `PageSize` (typically 4096 bytes). The maximum size of a small chunk. |
-| `MaxFli` | Maximum first-level index in the TLSF matrix (30 on 64-bit, 14 on 16-bit). |
-| `MaxLog2Sli` | Maximum log₂ of the second-level index count (5, giving 32 sub-buckets). |
-| `MaxBigChunkSize` | Largest chunk size that fits in the TLSF matrix. Chunks larger than this become *huge* chunks. |
-| `HugeChunkSize` | `MaxBigChunkSize + 1` — the threshold above which chunks are huge. |
-| `nimMaxHeap` | Optional compile-time ceiling on total heap size in MB (`-d:nimMaxHeap=N`). Zero means unlimited. |
+I. [Memory model and the `MemRegion` type](#i-memory-model-and-the-memregion-type)
+&nbsp;&nbsp;1. [`MemRegion`](#1-memregion)
+&nbsp;&nbsp;2. [How chunks are organized (brief)](#2-how-chunks-are-organized-brief)
 
----
+II. [Allocating and freeing memory on the current thread](#ii-allocating-and-freeing-memory-on-the-current-thread)
+&nbsp;&nbsp;1. [`alloc`](#1-alloc)
+&nbsp;&nbsp;2. [`alloc0`](#2-alloc0)
+&nbsp;&nbsp;3. [`dealloc`](#3-dealloc)
+&nbsp;&nbsp;4. [`realloc`](#4-realloc)
+&nbsp;&nbsp;5. [`realloc0`](#5-realloc0)
 
-## Key Types
+III. [Shared memory across threads](#iii-shared-memory-across-threads)
+&nbsp;&nbsp;1. [`allocShared`](#1-allocshared)
+&nbsp;&nbsp;2. [`allocShared0`](#2-allocshared0)
+&nbsp;&nbsp;3. [`deallocShared`](#3-deallocshared)
+&nbsp;&nbsp;4. [`reallocShared` / `reallocShared0`](#4-reallocshared--reallocshared0)
 
-### `MemRegion`
+IV. [Memory statistics and diagnostics](#iv-memory-statistics-and-diagnostics)
+&nbsp;&nbsp;1. [`getFreeMem`](#1-getfreemem)
+&nbsp;&nbsp;2. [`getTotalMem`](#2-gettotalmem)
+&nbsp;&nbsp;3. [`getOccupiedMem`](#3-getoccupiedmem)
+&nbsp;&nbsp;4. [`getMaxMem`](#4-getmaxmem)
+&nbsp;&nbsp;5. [`getFreeSharedMem` / `getTotalSharedMem` / `getOccupiedSharedMem`](#5-getfreesharedmem--gettotalsharedmem--getoccupiedsharedmem)
+&nbsp;&nbsp;6. [`getMemCounters`](#6-getmemcounters)
+&nbsp;&nbsp;7. [`ptrSize`](#7-ptrsize)
 
-The root data structure representing one entire heap. On a single-threaded program there is one `MemRegion`. With threads, each thread has its own region; a shared heap region is used for `allocShared`.
+V. [Returning pages to the operating system](#v-returning-pages-to-the-operating-system)
+&nbsp;&nbsp;1. [`deallocOsPages`](#1-deallocospages)
 
-Important fields:
+VI. [How it works under the hood (summary overview)](#vi-how-it-works-under-the-hood-summary-overview)
 
-| Field | Purpose |
-|---|---|
-| `freeSmallChunks[s]` | Array of free small-chunk lists, one entry per size class (index = `size / MemAlign`). The head is the *active* chunk for that class. |
-| `sharedFreeLists[s]` | *(ARC/ORC only)* Cross-thread free cells waiting to be reclaimed by the owning thread. |
-| `flBitmap` / `slBitmap` | TLSF bitmaps: indicate which size-class buckets in the matrix are non-empty. Enable O(1) best-fit lookup via bit-scan. |
-| `matrix` | TLSF free-list matrix `[RealFli][MaxSli]` of big chunk doubly-linked lists. |
-| `currMem` / `maxMem` / `freeMem` / `occ` | Accounting: total OS memory, peak OS memory, free OS memory, currently occupied bytes. |
-| `chunkStarts` | `IntSet` (a compact bitset) of all page indices that start a chunk. Used to look up which chunk a pointer belongs to. |
-| `heapLinks` | Linked list of `(chunk, size)` pairs — the complete OS-level allocation log. Used during `deallocOsPages` to return everything to the OS. |
-| `llmem` | Low-level bump allocator for the allocator's own internal data structures (AVL nodes, trunk nodes, heap links). Lifetime = lifetime of the `MemRegion`. |
+VII. [Practical recipes](#vii-practical-recipes)
+&nbsp;&nbsp;1. [A fixed-size object pool](#1-a-fixed-size-object-pool)
+&nbsp;&nbsp;2. [A growable buffer (like `seq`) via `realloc`](#2-a-growable-buffer-like-seq-via-realloc)
+&nbsp;&nbsp;3. [Passing a buffer between threads via `allocShared`](#3-passing-a-buffer-between-threads-via-allocshared)
+&nbsp;&nbsp;4. [Monitoring memory usage](#4-monitoring-memory-usage)
 
----
+VIII. [Quick reference table](#viii-quick-reference-table)
 
-### `SmallChunk`
-
-One OS page subdivided into cells of a single size class.
-
-| Field | Purpose |
-|---|---|
-| `size` | Cell size for this chunk (all cells are identical in size). |
-| `acc` | Accumulator — byte offset of the next uninitialized cell from `data`. Advances monotonically until the page is full. |
-| `free` | Total bytes this chunk can still provide (via both free list and accumulator). When `free < size`, the chunk is removed from `freeSmallChunks`. |
-| `freeList` | Singly-linked list of recycled cells. Cells may belong to this chunk or be *foreign* (donated from another chunk or thread). |
-| `foreignCells` | Count of free cells in `freeList` that originate from a different chunk. A chunk with `foreignCells > 0` must not be freed: doing so would orphan those cells. |
-| `owner` | Pointer to the `MemRegion` that created this chunk. Used to detect cross-thread deallocations. |
-| `data` | Aligned start of the usable memory region within the page. |
+IX. [Summary: which procedure to use](#ix-summary-which-procedure-to-use)
 
 ---
 
-### `BigChunk`
+## I. Memory model and the `MemRegion` type
 
-A page-aligned block of one or more pages, used for allocations too large to fit in a small chunk. Also serves as the base for huge chunks.
+### 1. `MemRegion`
 
-| Field | Purpose |
-|---|---|
-| `size` | Total byte size of this chunk including the `BigChunk` header. |
-| `prevSize` | Size of the *preceding* adjacent chunk in the virtual address space; the least-significant bit encodes whether *this* chunk is currently *in use*. This dual-purpose encoding drives the TLSF coalescing logic. |
-| `prev` / `next` | Free-list doubly-linked list pointers. **While the chunk is allocated**, `prev` is overwritten with the aligned data pointer (the value returned to the user) — this allows the GC and deallocation path to find the user pointer from the raw chunk pointer. |
-| `owner` | Owning `MemRegion`. |
+```nim
+type MemRegion = object
+```
 
----
+**What it does.** `MemRegion` is a single "heap": a self-contained data
+structure with its own chunks, TLSF bitmaps, an AVL tree of big blocks,
+and lists of free small cells. In an ordinary program one `MemRegion` is
+created implicitly per thread (the per-thread heap), and another one
+serves as the shared heap for `allocShared`. The type is not exported and
+is never constructed directly by user code: all work with it goes through
+the procedures in sections II–V, which are already bound to the right
+instance.
 
-### `FreeCell`
-
-A recycled small-chunk cell that is available for reuse. The `FreeCell` header is **overlaid** on top of whatever data used to occupy the cell, so it occupies zero extra space.
-
-| Field | Purpose |
-|---|---|
-| `next` | Next cell in the free list. |
-| `zeroField` *(non-destructors)* | `0` = free cell, `1` = manually managed pointer, otherwise points to `PNimType`. Used by the legacy GC to determine whether a cell is live. |
-| `alignment` *(ARC/ORC)* | Padding to keep cell layout compatible. |
+- **Parameters**: none (the type is only ever used as an implicit
+  receiver inside internal procedures; it never surfaces to the caller).
 
 ---
 
-### `LLChunk` (Low-Level Chunk)
+### 2. How chunks are organized (brief)
 
-A bump-pointer arena used *only* for the allocator's own housekeeping structures (AVL nodes, trunk nodes, heap link records). Each `LLChunk` is exactly one page. It is never returned to the OS during normal operation; `llDeallocAll` returns them all at shutdown.
+A region's memory is divided into **chunks**, each starting at an
+address that is a multiple of the page size:
 
----
+- **Small chunk** (`SmallChunk`, one page in size) is cut into cells of
+  a single size class; cells are reused through a linked free-cell list
+  plus a shared "accumulator" (a pointer that advances into the still
+  untouched part of the chunk).
+- **Big chunk** (`BigChunk`) backs requests that don't fit in a small
+  chunk; such chunks live in a TLSF matrix indexed by size class and can
+  merge (coalesce) with their neighbors on free.
+- **Huge chunk** (larger than `HugeChunkSize`) is allocated and freed
+  directly through the operating system, bypassing the matrix entirely.
 
-### `IntSet` / `Trunk`
-
-A compact bitset mapping page indices to boolean membership. Implemented as a hash table of `Trunk` nodes, where each `Trunk` covers a 256-bit window of addresses. Used for `chunkStarts` — the set of page addresses that start a chunk — enabling O(1) "does pointer `p` point into a valid chunk?" queries.
-
----
-
-### `AvlNode` *(non-ARC/ORC only)*
-
-Nodes in an AVL tree (`root`) that maps big-chunk data addresses to their size ranges. The GC uses this tree for interior-pointer scanning — given an arbitrary pointer into the middle of an allocation, find the base of that allocation.
-
----
-
-### `HeapLinks`
-
-A linked list of arrays, each entry recording `(PBigChunk, size)` — every region of memory obtained from the OS. Used by `deallocOsPages` to return all OS memory at program exit or region teardown.
+The public procedures below decide on their own which of the three paths
+to take, based on the request size — calling code never has to worry
+about this.
 
 ---
 
-## Core Internal Functions
+## II. Allocating and freeing memory on the current thread
 
-### `rawAlloc`
+### 1. `alloc`
+
+```nim
+proc alloc(size: Natural): pointer {.gcsafe.}
 ```
-proc rawAlloc(a: var MemRegion, requestedSize: int, alignment: int = 0): pointer
+
+**What it does.** Allocates `size` bytes of untyped memory on the current
+thread's heap and returns a pointer to it. The contents are **not**
+guaranteed to be zeroed — use `alloc0` if that matters. If `size` is 0,
+the behavior follows from the internal size rounding (a minimal-sized
+block is allocated rather than `nil`).
+
+- **Implementation notes.** For requests that fit in a small chunk, the
+  memory is almost free to hand out: either the chunk's "accumulator" is
+  advanced, or the head of the free-cell list is popped — both are O(1).
+  For larger requests, a suitable block is looked up in the TLSF matrix
+  (also amortized O(1), thanks to the bitmaps), requesting new pages from
+  the OS if needed.
+
+- **Parameters**:
+  - `size: Natural` — the requested size in bytes (an immutable input).
+
+- **Examples**:
+
+```nim
+# Typical case: allocate memory for an object and work through casting.
+type
+  Vec3 = object
+    x, y, z: float32
+
+var p = cast[ptr Vec3](alloc(sizeof(Vec3)))
+p.x = 1.0
+p.y = 2.0
+p.z = 3.0
+echo p.x, " ", p.y, " ", p.z  # prints 1.0 2.0 3.0
+dealloc(p)                    # every alloc must be matched by a dealloc
+
+# Boundary case: zero size — no exception is raised,
+# but the returned pointer must not be used to store data.
+var empty = alloc(0)
+dealloc(empty)
 ```
-
-The central allocation workhorse. All public `alloc`/`alloc0` calls pass through here.
-
-**What it does:**
-
-1. Rounds `requestedSize` up to a multiple of `MemAlign`.
-2. **Small path** (`size ≤ SmallChunkSize - overhead`, no custom alignment): looks up the active chunk in `a.freeSmallChunks[s]`. If a chunk exists and has a free-list cell, pops from the free list. If no free-list cell, bumps the accumulator. If no active chunk at all, allocates a fresh OS page via `getSmallChunk` and sets it as the active chunk.
-3. **Big/huge path**: processes any deferred cross-thread frees (`sharedFreeListBigChunks`), then calls `getBigChunk` or `getHugeChunk`. Computes an alignment pad if custom alignment was requested, stores the aligned data pointer in `c.prev` for later recovery by the GC and dealloc.
-4. In non-ARC/ORC builds, inserts the allocation range into the AVL tree (`a.root`) for interior-pointer scanning.
-5. Updates `a.occ`.
-
-**Returns** a raw pointer to usable memory. The caller is responsible for any header bookkeeping.
 
 ---
 
-### `rawAlloc0`
-```
-proc rawAlloc0(a: var MemRegion, requestedSize: int): pointer
+### 2. `alloc0`
+
+```nim
+proc alloc0(size: Natural): pointer
 ```
 
-Thin wrapper around `rawAlloc` that zero-initialises the returned memory with `zeroMem`. Used as the implementation of `alloc0`.
+**What it does.** Same as `alloc`, but additionally zeroes all `size`
+bytes before returning the pointer. Useful wherever a predictable initial
+memory state matters (for example, buffers that will later be
+interpreted as an array of numbers).
+
+- **Implementation notes.** The implementation is a thin wrapper: `alloc`
+  is called first, then `zeroMem` sweeps the entire range. The extra cost
+  is linear in size and only noticeable for large buffers.
+
+- **Parameters**:
+  - `size: Natural` — the requested size in bytes.
+
+- **Examples**:
+
+```nim
+# Typical case: an int array guaranteed to be zeroed.
+var arr = cast[ptr UncheckedArray[int]](alloc0(5 * sizeof(int)))
+echo arr[0], " ", arr[4]  # prints 0 0
+dealloc(arr)
+
+# Practical scenario: a counter buffer that will only ever be incremented.
+var counters = cast[ptr UncheckedArray[int32]](alloc0(256 * sizeof(int32)))
+inc(counters[10])
+inc(counters[10])
+echo counters[10]  # prints 2 — the starting value was guaranteed to be 0
+dealloc(counters)
+```
 
 ---
 
-### `rawDealloc`
+### 3. `dealloc`
+
+```nim
+proc dealloc(p: pointer)
 ```
-proc rawDealloc(a: var MemRegion, p: pointer)
+
+**What it does.** Frees memory previously obtained via `alloc` or
+`alloc0` **on the same thread's heap**. After the call, the pointer `p`
+must not be used — accessing already-freed memory is undefined behavior,
+not a raised Nim exception. Calling `dealloc` twice on the same pointer
+(a double free) is likewise undefined behavior and cannot be safely
+demonstrated via `doAssertRaises`.
+
+- **Implementation notes.** Depending on whether the pointer belongs to a
+  small or a big chunk, the cell is either returned to the chunk's
+  free-cell list (and the chunk is not freed on the spot once exhausted —
+  there is a dedicated guard against a race between threads sharing free
+  cells), or the chunk is handed back to the TLSF matrix and may merge
+  with neighboring free chunks.
+
+- **Parameters**:
+  - `p: pointer` — a pointer previously returned by `alloc`/`alloc0`
+    (logically mutated — it becomes invalid).
+
+- **Examples**:
+
+```nim
+# Typical case.
+var p = alloc(64)
+dealloc(p)
+
+# Practical scenario: freeing at the end of scope via defer.
+proc useTemporaryBuffer() =
+  var buf = alloc(1024)
+  defer: dealloc(buf)
+  # ... work with buf ...
+  discard
+useTemporaryBuffer()
 ```
-
-The central deallocation workhorse. Determines whether `p` is in a small or big chunk, then takes the appropriate path.
-
-**Small chunk path:**
-
-- If `c.owner == addr(a)` (we own it): decrements `a.occ`, optionally overwrites with `0xFF` (debug mode), and adds the cell to the *active* chunk's free list (the chunk currently at the head of `freeSmallChunks[s]`). If the cell belongs to a different chunk than the active one, it is *lent* as a foreign cell. If the current chunk was previously exhausted, it is re-activated.
-- If the chunk belongs to another thread (ARC/ORC): adds the cell to `a.sharedFreeLists[s]` for deferred processing.
-
-**Big chunk path:**
-
-- If `c.owner == addr(a)`: calls `deallocBigChunk`, which removes the chunk from the AVL tree, then either calls `freeBigChunk` (TLSF coalescing + re-insertion into the matrix) or `freeHugeChunk` (direct OS dealloc).
-- If the chunk belongs to another thread (ARC/ORC): pushes it onto `a.sharedFreeListBigChunks`.
 
 ---
 
-### `alloc`
-```
-proc alloc(allocator: var MemRegion, size: Natural): pointer
+### 4. `realloc`
+
+```nim
+proc realloc(p: pointer, newSize: Natural): pointer
 ```
 
-Public-facing allocation for the legacy GC build. Calls `rawAlloc(size + sizeof(FreeCell))`, stamps `zeroField = 1` on the returned `FreeCell` header to mark the cell as live, then returns the pointer advanced past the header. The header is invisible to the caller.
+**What it does.** Resizes a previously allocated block to `newSize`
+bytes, preserving contents up to `min(old_size, newSize)` bytes, and
+returns a pointer to the (possibly new) block. If `p` is `nil`, it
+behaves like `alloc(newSize)`. If `newSize` is 0, the block is freed and
+`nil` is returned.
 
-In ARC/ORC builds, this is a direct pass-through to `rawAlloc` with no header.
+- **Implementation notes.** Unlike C's classic `realloc`, there is no
+  attempt to grow the block in place: the implementation always
+  allocates a fresh block of the required size, copies the data via
+  `copyMem`, and frees the old one. This is simpler and safer with
+  respect to fragmentation, at the cost of extra copying on frequent
+  growth — hence the practical recommendation to grow buffers with
+  headroom (see section VII, recipe 2).
+
+- **Parameters**:
+  - `p: pointer` — a pointer to an existing block, or `nil`.
+  - `newSize: Natural` — the new requested size in bytes.
+
+- **Examples**:
+
+```nim
+# Typical case: growing a buffer.
+var buf = cast[ptr UncheckedArray[int32]](alloc(4 * sizeof(int32)))
+buf[0] = 1
+buf[1] = 2
+buf[2] = 3
+buf[3] = 4
+buf = cast[ptr UncheckedArray[int32]](realloc(buf, 8 * sizeof(int32)))
+echo buf[0], " ", buf[3]  # prints 1 4 — old data was preserved
+dealloc(buf)
+
+# Boundary case: newSize == 0 is equivalent to dealloc.
+var p = alloc(16)
+p = realloc(p, 0)
+echo p == nil  # prints true
+```
 
 ---
 
-### `alloc0`
-```
-proc alloc0(allocator: var MemRegion, size: Natural): pointer
+### 5. `realloc0`
+
+```nim
+proc realloc0(p: pointer, oldSize, newSize: Natural): pointer
 ```
 
-Like `alloc` but zero-fills the returned memory.
+**What it does.** Same as `realloc`, but additionally zeroes the "tail" —
+the bytes between `oldSize` and `newSize`, if the new size is larger than
+the old one. Unlike `realloc`, it requires the old size `oldSize` to be
+passed explicitly, since it's exactly what the zeroing boundary is
+measured from.
+
+- **Implementation notes.** A wrapper around `realloc`: after copying the
+  old data, `zeroMem` clears only the "new" part of the buffer
+  (`newSize - oldSize` bytes), leaving already-copied data untouched.
+
+- **Parameters**:
+  - `p: pointer` — a pointer to an existing block, or `nil`.
+  - `oldSize: Natural` — the block's previous size in bytes (needed only
+    to compute the zeroing boundary).
+  - `newSize: Natural` — the new requested size in bytes.
+
+- **Examples**:
+
+```nim
+# Typical case: extending a buffer with a guaranteed-zero new tail.
+var buf = cast[ptr UncheckedArray[byte]](alloc0(4))
+buf[0] = 1
+buf = cast[ptr UncheckedArray[byte]](realloc0(buf, 4, 8))
+echo buf[0], " ", buf[4], " ", buf[7]  # prints 1 0 0
+dealloc(buf)
+```
 
 ---
 
-### `dealloc`
-```
-proc dealloc(allocator: var MemRegion, p: pointer)
+## III. Shared memory across threads
+
+### 1. `allocShared`
+
+```nim
+proc allocShared(size: Natural): pointer {.gcsafe.}
 ```
 
-Public-facing deallocation. In legacy GC mode, verifies the `FreeCell` header, rewinds `p` by `sizeof(FreeCell)`, and calls `rawDealloc`. In ARC/ORC mode, calls `rawDealloc` directly.
+**What it does.** Allocates `size` bytes on a heap shared by every thread
+in the program. Memory obtained here can be handed off to another thread
+and safely freed there via `deallocShared` — unlike memory from `alloc`,
+which is tied to its owning thread.
+
+- **Implementation notes.** When thread support is present, access to the
+  shared heap is guarded by a lock (`heapLock`); without thread support
+  it's simply an alias for regular `alloc`. In the destructor-based GC
+  configuration, lock-free deferred-free lists are used instead of a
+  lock — freeing "someone else's" memory doesn't block the thread, it
+  defers the actual release until the owner's next allocator call
+  (details in section VI).
+
+- **Parameters**:
+  - `size: Natural` — the requested size in bytes.
+
+- **Examples**:
+
+```nim
+# Typical case: a buffer that will be freed from a different thread.
+var shared = allocShared(128)
+deallocShared(shared)
+```
 
 ---
 
-### `realloc`
-```
-proc realloc(allocator: var MemRegion, p: pointer, newsize: Natural): pointer
+### 2. `allocShared0`
+
+```nim
+proc allocShared0(size: Natural): pointer
 ```
 
-Reallocates the block at `p` to `newsize` bytes. Always allocates a new block, copies `min(old_size, newsize)` bytes, then frees the old block. There is no in-place resize optimisation. If `newsize == 0` and `p != nil`, this is equivalent to `dealloc`. If `p == nil`, this is equivalent to `alloc`.
+**What it does.** The zeroing variant of `allocShared` — analogous to the
+`alloc`/`alloc0` pair.
+
+- **Parameters**:
+  - `size: Natural` — the requested size in bytes.
+
+- **Examples**:
+
+```nim
+var shared = cast[ptr UncheckedArray[int]](allocShared0(4 * sizeof(int)))
+echo shared[0]  # prints 0
+deallocShared(shared)
+```
 
 ---
 
-### `realloc0`
-```
-proc realloc0(allocator: var MemRegion, p: pointer, oldsize, newsize: Natural): pointer
+### 3. `deallocShared`
+
+```nim
+proc deallocShared(p: pointer)
 ```
 
-Like `realloc`, but if `newsize > oldsize`, the extra bytes (`[oldsize..newsize)`) are explicitly zero-filled.
+**What it does.** Frees a block allocated via `allocShared`/
+`allocShared0`. Unlike regular `dealloc`, it's safe to call from a thread
+other than the one that allocated the memory — that's exactly the
+practical point of the shared heap.
+
+- **Implementation notes.** If the freeing thread is the same as the
+  chunk's owner, the release happens immediately; otherwise the block is
+  placed on the owner's deferred-free list and actually released later,
+  which avoids holding a lock for the duration of the free operation
+  itself.
+
+- **Parameters**:
+  - `p: pointer` — a pointer previously returned by `allocShared`/
+    `allocShared0`.
+
+- **Examples**:
+
+```nim
+var shared = allocShared(64)
+deallocShared(shared)
+```
 
 ---
 
-### `getBigChunk`
-```
-proc getBigChunk(a: var MemRegion, size: int): PBigChunk
+### 4. `reallocShared` / `reallocShared0`
+
+```nim
+proc reallocShared(p: pointer, newSize: Natural): pointer
+proc reallocShared0(p: pointer, oldSize, newSize: Natural): pointer
 ```
 
-Finds or creates a big chunk of at least `size` bytes using the TLSF algorithm:
+**What they do.** Full counterparts of `realloc`/`realloc0` for the
+shared heap: they resize a block while preserving its data, and
+`reallocShared0` additionally zeroes the new tail.
 
-1. Calls `mappingSearch(size, fl, sl)` to round `size` up to the next TLSF bucket boundary (page-aligned).
-2. Calls `findSuitableBlock(a, fl, sl)` to scan the TLSF bitmaps for a free block at least as large.
-3. If no block found: calls `requestOsChunks` to obtain fresh memory from the OS. Adapts the request size dynamically — starts at 4 pages, doubles up to `MaxBigChunkSize` based on current heap occupancy.
-4. If a block was found and is larger than needed: calls `splitChunk` to split it, returning the remainder to the matrix.
-5. Marks the chunk as "in use" (sets the used bit in `prevSize`).
+- **Parameters**: same as `realloc`/`realloc0` above, except the pointer
+  must have come from `allocShared`/`allocShared0`.
+
+- **Examples**:
+
+```nim
+var shared = cast[ptr UncheckedArray[int32]](allocShared(4 * sizeof(int32)))
+shared[0] = 42
+shared = cast[ptr UncheckedArray[int32]](reallocShared(shared, 8 * sizeof(int32)))
+echo shared[0]  # prints 42
+deallocShared(shared)
+```
 
 ---
 
-### `freeBigChunk`
-```
-proc freeBigChunk(a: var MemRegion, c: PBigChunk)
+## IV. Memory statistics and diagnostics
+
+### 1. `getFreeMem`
+
+```nim
+proc getFreeMem(): int
 ```
 
-Returns a big chunk to the TLSF free pool. Implements **boundary-tag coalescing**:
+**What it does.** Returns the number of bytes that the current thread's
+heap has already requested from the operating system but isn't currently
+using for live objects (i.e. available for future `alloc` calls without
+touching the OS).
 
-1. Clears the used bit in `c.prevSize`.
-2. If the *left* neighbour is free and under `MaxBigChunkSize`: removes it from the matrix and merges it with `c`.
-3. If the *right* neighbour is free and under `MaxBigChunkSize`: removes it from the matrix and merges it with `c`.
-4. Calls `addChunkToMatrix` to re-insert the (possibly enlarged) chunk.
+- **Parameters**: none.
+
+- **Examples**:
+
+```nim
+let before = getFreeMem()
+var p = alloc(1024)
+let after = getFreeMem()
+echo before >= after  # prints true — free memory didn't increase
+dealloc(p)
+```
 
 ---
 
-### `getHugeChunk` / `freeHugeChunk`
-```
-proc getHugeChunk(a: var MemRegion; size: int): PBigChunk
-proc freeHugeChunk(a: var MemRegion; c: PBigChunk)
+### 2. `getTotalMem`
+
+```nim
+proc getTotalMem(): int
 ```
 
-For allocations above `MaxBigChunkSize`. Each call goes directly to the OS (`allocPages` / `osDeallocPages`). There is no pooling or coalescing.
+**What it does.** Returns the total amount of memory (in bytes) that the
+current thread's heap has ever requested from the operating system and
+still holds onto (the occupied part plus the free part within
+already-obtained pages).
+
+- **Parameters**: none.
+
+- **Examples**:
+
+```nim
+echo getTotalMem() >= getFreeMem()  # prints true — total is never less than free
+```
 
 ---
 
-### `getSmallChunk`
-```
-proc getSmallChunk(a: var MemRegion): PSmallChunk
+### 3. `getOccupiedMem`
+
+```nim
+proc getOccupiedMem(): int
 ```
 
-Obtains a fresh `SmallChunk` by allocating exactly one page via `getBigChunk(a, PageSize)`. The page is then reinterpreted as a `SmallChunk` — no data is moved.
+**What it does.** Returns the amount of memory (in bytes) actually
+occupied by live objects right now, i.e. essentially
+`getTotalMem() - getFreeMem()` (though internally it's tracked with a
+dedicated counter rather than recomputed by subtraction each time).
+
+- **Parameters**: none.
+
+- **Examples**:
+
+```nim
+let before = getOccupiedMem()
+var p = alloc(256)
+echo getOccupiedMem() > before  # prints true
+dealloc(p)
+```
 
 ---
 
-### `requestOsChunks`
-```
-proc requestOsChunks(a: var MemRegion, size: int): PBigChunk
+### 4. `getMaxMem`
+
+```nim
+proc getMaxMem*(): int
 ```
 
-Requests memory from the OS via `osAllocPages` / `osTryAllocPages`. Implements an adaptive growth strategy: starts conservatively at 4 pages (16 KB), then doubles the request on each call up to `MaxBigChunkSize`, scaled by current heap occupancy. If the OS cannot satisfy the larger request, falls back to the exact `size`. Records the allocation in `a.heapLinks` for later teardown.
+**What it does.** Returns the historical maximum amount of memory held by
+the heap over the program's entire run — i.e. the peak value of
+`getTotalMem()`, not the current one.
+
+- **Implementation notes.** The peak value isn't updated on every
+  allocation, only at the moment pages are released back to the
+  operating system (`decCurrMem`), so the returned value is effectively
+  `max(current_value, last_recorded_peak)` — which also covers the case
+  where the current moment is itself a new peak.
+
+- **Parameters**: none.
+
+- **Examples**:
+
+```nim
+var p = alloc(1024 * 1024)
+let peak = getMaxMem()
+dealloc(p)
+echo getMaxMem() >= peak  # prints true — the peak never decreases after a free
+```
 
 ---
 
-### `splitChunk` / `splitChunk2`
-```
-proc splitChunk(a: var MemRegion, c: PBigChunk, size: int)
-proc splitChunk2(a: var MemRegion, c: PBigChunk, size: int): PBigChunk
+### 5. `getFreeSharedMem` / `getTotalSharedMem` / `getOccupiedSharedMem`
+
+```nim
+proc getFreeSharedMem(): int
+proc getTotalSharedMem(): int
+proc getOccupiedSharedMem(): int
 ```
 
-Carves a prefix of `size` bytes from chunk `c`, leaving the remainder as a new independent chunk. `splitChunk2` returns the remainder without inserting it into the matrix; `splitChunk` also calls `addChunkToMatrix` on the remainder.
+**What they do.** Full counterparts of the three statistics procedures
+above (`getFreeMem`, `getTotalMem`, `getOccupiedMem`), but for the shared
+heap rather than the current thread's heap.
 
-The boundary-tag `prevSize` field of the next-adjacent chunk is updated to reflect the new layout.
+- **Implementation notes.** Without destructor-based GC, access to the
+  shared heap's counters is guarded by the same lock as the
+  `allocShared`/`deallocShared` operations themselves.
+
+- **Parameters**: none.
+
+- **Examples**:
+
+```nim
+var shared = allocShared(4096)
+echo getOccupiedSharedMem() > 0  # prints true
+deallocShared(shared)
+```
 
 ---
 
-### `deallocBigChunk`
-```
-proc deallocBigChunk(a: var MemRegion, c: PBigChunk)
+### 6. `getMemCounters`
+
+```nim
+proc getMemCounters*(): (int, int)
 ```
 
-Cleans up bookkeeping before freeing a big chunk:
+**What it does.** Returns a pair of counters `(number of alloc calls,
+number of dealloc calls)` for the current thread's heap. Only available
+when compiled with `-d:nimTypeNames` — in other builds the procedure
+doesn't exist at all.
 
-- Decrements `a.occ`.
-- In non-ARC/ORC builds, removes the chunk's address range from the AVL tree.
-- Resets `c.prev` (which was overwritten with the aligned data pointer while the chunk was live).
-- Dispatches to `freeHugeChunk` or `freeBigChunk` based on chunk size.
+- **Parameters**: none.
+
+- **Examples**:
+
+```nim
+# Compile with -d:nimTypeNames, otherwise this procedure is unavailable.
+when defined(nimTypeNames):
+  var p = alloc(16)
+  let (allocs, deallocs) = getMemCounters()
+  echo allocs > deallocs  # prints true — dealloc hasn't been called yet
+  dealloc(p)
+```
 
 ---
 
-### `deallocOsPages`
-```
-proc deallocOsPages(a: var MemRegion)
-```
+### 7. `ptrSize`
 
-Returns **all** OS-level pages held by the region to the OS. Called at program exit or when tearing down a thread's heap. Iterates the `heapLinks` list and calls `osDeallocPages` on each recorded allocation, then calls `llDeallocAll` to free the internal bump-allocator pages.
-
----
-
-### `llAlloc`
-```
-proc llAlloc(a: var MemRegion, size: int): pointer
-```
-
-A private bump-pointer allocator for the allocator's own metadata (AVL nodes, trunk nodes, heap link records). Allocates from `a.llmem`; if `a.llmem` is exhausted, obtains a fresh OS page. Memory allocated here is **never individually freed** — it is all released at once by `llDeallocAll`.
-
----
-
-### `llDeallocAll`
-```
-proc llDeallocAll(a: var MemRegion)
-```
-
-Walks the `llmem` chain and calls `osDeallocPages` on every page used for internal metadata. Called at region teardown.
-
----
-
-### `compensateCounters` *(ARC/ORC only)*
-```
-proc compensateCounters(a: var MemRegion; c: PSmallChunk; size: int)
-```
-
-When cells from `sharedFreeLists` are absorbed into a chunk (`fetchSharedCells`), this function adjusts the chunk's `free` counter and `a.occ` to account for the reclaimed capacity. Also increments `c.foreignCells` for each cell that originated from a different chunk.
-
----
-
-### `freeDeferredObjects` *(ARC/ORC only)*
-```
-proc freeDeferredObjects(a: var MemRegion; root: PBigChunk)
-```
-
-Processes the `sharedFreeListBigChunks` queue, calling `deallocBigChunk` for each entry. Bounded to `MaxSteps = 20` iterations per call to prevent unbounded latency spikes; any remainder is re-enqueued.
-
----
-
-### `addToSharedFreeList` / `addToSharedFreeListBigChunks` *(ARC/ORC only)*
-```
-proc addToSharedFreeList(c: PSmallChunk; f: ptr FreeCell; size: int)
-proc addToSharedFreeListBigChunks(a: var MemRegion; c: PBigChunk)
-```
-
-Lock-free atomic prepend operations that deposit a freed cell or big chunk onto the owning thread's deferred-free queue. Uses compare-and-swap when thread support is enabled.
-
----
-
-## TLSF Bitmap Operations
-
-The following small functions implement the O(1) free-list lookup at the heart of TLSF.
-
-### `msbit` / `lsbit`
-```
-proc msbit(x: uint32): int
-proc lsbit(x: uint32): int
-```
-
-Find the position of the most-significant and least-significant set bit in a 32-bit word, respectively. `msbit` uses a 256-entry lookup table (`fsLookupTable`) to handle one byte at a time. `lsbit` is derived from `msbit` via `x & (-x)`.
-
-Used to map a requested size to a TLSF matrix index (`fl`, `sl`) and to find the lowest non-empty bucket.
-
----
-
-### `mappingSearch`
-```
-proc mappingSearch(r, fl, sl: var int)
-```
-
-Given a requested size `r`, rounds it **up** to the nearest TLSF bucket boundary (page-aligned), then computes the first-level index `fl` and second-level index `sl` into the matrix. This "search" rounding ensures that any block found in the resulting bucket is guaranteed to be at least as large as the original request.
-
----
-
-### `mappingInsert`
-```
-proc mappingInsert(r: int): tuple[fl, sl: int]
-```
-
-Given an exact chunk size `r`, computes the `fl`/`sl` coordinates for *inserting* into the matrix without any rounding. The chunk goes into the bucket that exactly matches its size.
-
----
-
-### `findSuitableBlock`
-```
-proc findSuitableBlock(a: MemRegion; fl, sl: var int): PBigChunk
-```
-
-Scans the TLSF bitmap to find the **smallest free block** that is at least as large as the requested size. First checks whether the exact `(fl, sl)` bucket has anything; if not, scans to the next higher non-empty bucket via bit-scan operations on `slBitmap` and `flBitmap`. Updates `fl` and `sl` to point to the found bucket.
-
----
-
-### `addChunkToMatrix` / `removeChunkFromMatrix`
-```
-proc addChunkToMatrix(a: var MemRegion; b: PBigChunk)
-proc removeChunkFromMatrix(a: var MemRegion; b: PBigChunk)
-proc removeChunkFromMatrix2(a: var MemRegion; b: PBigChunk; fl, sl: int)
-```
-
-Manage doubly-linked lists of free big chunks within the TLSF matrix. `addChunkToMatrix` prepends a chunk to the head of the list for its `(fl, sl)` bucket and sets the corresponding bits in `slBitmap`/`flBitmap`. `removeChunkFromMatrix` splices a chunk out from anywhere in the list, clearing the bitmap bits if the list becomes empty.
-
----
-
-## IntSet Operations (Chunk Tracking)
-
-### `intSetGet` / `intSetPut`
-```
-proc intSetGet(t: IntSet, key: int): PTrunk
-proc intSetPut(a: var MemRegion, t: var IntSet, key: int): PTrunk
-```
-
-Hash-table lookup and insert for the `IntSet` bitset. Keys are page indices divided by `TrunkShift` — each `Trunk` covers `IntsPerTrunk * IntSize` pages. `intSetPut` allocates new `Trunk` nodes from `llAlloc` when a hash bucket is first used.
-
----
-
-### `contains` / `incl` / `excl`
-```
-proc contains(s: IntSet, key: int): bool
-proc incl(a: var MemRegion, s: var IntSet, key: int)
-proc excl(s: var IntSet, key: int)
-```
-
-Bit-level get/set/clear on the `IntSet`. Each operation first locates the relevant `Trunk` node (via hash), then computes a bit index within the trunk's `bits` array.
-
----
-
-## Memory Statistics Functions
-
-### `getFreeMem` / `getTotalMem` / `getOccupiedMem`
-```
-proc getFreeMem(a: MemRegion): int
-proc getTotalMem(a: MemRegion): int
-proc getOccupiedMem(a: MemRegion): int
-```
-
-Direct accessors for `MemRegion` accounting fields:
-
-- **`getFreeMem`** — `a.freeMem`: bytes of OS-owned memory not currently held in any allocated chunk (free big chunks sitting in the TLSF matrix).
-- **`getTotalMem`** — `a.currMem`: total bytes obtained from the OS.
-- **`getOccupiedMem`** — `a.occ`: bytes that have been handed out to callers and not yet freed.
-
----
-
-### `getMaxMem`
-```
-proc getMaxMem(a: var MemRegion): int
-```
-
-Returns the **peak** OS-level memory usage since the region was created: `max(a.currMem, a.maxMem)`. `maxMem` is updated whenever `currMem` decreases (pages are returned to the OS), so this gives the true watermark.
-
----
-
-## Per-Thread Instantiation Template
-
-### `instantiateForRegion`
-```
-template instantiateForRegion(allocator: untyped)
-```
-
-A `dirty` template that binds the entire public allocator interface to a specific `MemRegion` variable. Generates these free-standing procedures for the calling module:
-
-| Generated proc | Delegates to |
-|---|---|
-| `allocImpl(size)` | `alloc(allocator, size)` |
-| `alloc0Impl(size)` | `alloc0(allocator, size)` |
-| `deallocImpl(p)` | `dealloc(allocator, p)` |
-| `reallocImpl(p, newSize)` | `realloc(allocator, p, newSize)` |
-| `realloc0Impl(p, oldSize, newSize)` | `realloc0(allocator, p, newSize)` + zero-fill |
-| `allocSharedImpl(size)` | Shared heap alloc (lock-guarded on threads) |
-| `allocShared0Impl(size)` | Zero-filling shared heap alloc |
-| `deallocSharedImpl(p)` | Shared heap dealloc |
-| `reallocSharedImpl(p, newSize)` | Shared heap realloc |
-| `reallocShared0Impl(p, oldSize, newSize)` | Zero-filling shared heap realloc |
-| `getFreeMem()` | `allocator.freeMem` |
-| `getTotalMem()` | `allocator.currMem` |
-| `getOccupiedMem()` | `allocator.occ` |
-| `getMaxMem*()` | `getMaxMem(allocator)` |
-
-In a threaded build without ARC/ORC, `allocShared*` and `deallocShared*` acquire/release `heapLock` around a separate `sharedHeap: MemRegion`.
-
----
-
-## Pointer Inspection Utilities *(non-ARC/ORC only)*
-
-### `isAllocatedPtr`
-```
-proc isAllocatedPtr(a: MemRegion, p: pointer): bool
-```
-
-Returns `true` if `p` points to an *allocated and live* cell. Checks that `p` is accessible (its page index is in `chunkStarts`), the chunk is not unused, and the `FreeCell.zeroField > 1` (indicating an active GC-managed object). Used by the GC for sanity assertions.
-
----
-
-### `interiorAllocatedPtr`
-```
-proc interiorAllocatedPtr(a: MemRegion, p: pointer): pointer
-```
-
-Given a pointer `p` that may point anywhere *inside* an allocation (not just to its base), returns the **base pointer** of that allocation, or `nil` if `p` is not inside any live allocation.
-
-For small chunks: computes the cell base from the chunk's cell size and the offset of `p` within the page.
-
-For big chunks: uses `c.prev` (which stores the aligned data pointer while the chunk is in use).
-
-For pointers outside any known chunk: consults the AVL tree (`a.root`) via `inRange` — the tree maps address ranges to their base pointers, enabling O(log n) interior-pointer lookup.
-
----
-
-### `prepareForInteriorPointerChecking`
-```
-proc prepareForInteriorPointerChecking(a: var MemRegion)
-```
-
-Caches `lowGauge(a.root)` and `highGauge(a.root)` into `a.minLargeObj` and `a.maxLargeObj` before a GC cycle. This range check filters out 99.96%+ of interior-pointer queries without needing to descend the AVL tree.
-
----
-
-### `isAccessible`
-```
-proc isAccessible(a: MemRegion, p: pointer): bool
-```
-
-Returns `true` if the page containing pointer `p` is tracked in `a.chunkStarts`, meaning `p` falls within memory managed by this region. This is the first filter applied before any deeper pointer checks.
-
----
-
-## Chunk List Helpers
-
-### `listAdd` / `listRemove`
-```
-proc listAdd[T](head: var T, c: T)
-proc listRemove[T](head: var T, c: T)
-```
-
-Generic intrusive doubly-linked list operations. `listAdd` prepends `c` to `head`; `listRemove` splices `c` out. Both include debug assertions (via `sysAssert`) that verify list consistency.
-
----
-
-### `updatePrevSize`
-```
-proc updatePrevSize(a: var MemRegion, c: PBigChunk, prevSize: int)
-```
-
-After a chunk is resized or split, updates the `prevSize` field of the *immediately following* chunk in the virtual address space. This is the boundary-tag mechanism — it allows the free-chunk coalescing code in `freeBigChunk` to find and merge adjacent free chunks without maintaining a separate data structure.
-
----
-
-## GC Object Iteration
-
-### `allObjects` *(iterator)*
-```
-iterator allObjects(m: var MemRegion): pointer
-```
-
-Yields a raw pointer to every currently-allocated object in the region. Iterates `m.chunkStarts`, then for each active chunk:
-
-- **Small chunk**: walks from `data` to `data + acc` in steps of `c.size`, yielding each cell address.
-- **Big chunk**: yields `c.prev` (the aligned data pointer stored there during allocation).
-
-Sets `m.locked = true` for the duration to prevent modifications. Used by GC mark phases.
-
----
-
-### `iterToProc`
-```
-proc iterToProc*(iter: typed, envType: typedesc; procName: untyped)
-```
-
-Compiler magic (`{.magic: "Plugin", compileTime.}`) that converts a closure iterator into a callback-style procedure. Used internally to adapt `allObjects` into the form expected by the GC's C interface.
-
----
-
-## Auxiliary Chunk Queries
-
-### `ptrSize`
-```
+```nim
 proc ptrSize(p: pointer): int
 ```
 
-Returns the usable byte size of the allocation at `p`. For small chunks this is `c.size - sizeof(FreeCell)` (legacy GC) or `c.size` (ARC/ORC). For big chunks it subtracts `bigChunkOverhead()`.
+**What it does.** Returns the actual usable size of the block that `p`
+points to — it can be **larger** than the size originally requested, due
+to rounding up to a cell size class (for small chunks) or to a page size
+(for big chunks). This is exactly why `realloc` can sometimes grant
+access to extra bytes "for free", if the original `alloc`'s rounding was
+more generous than strictly needed.
 
-This is what `realloc` uses to determine how many bytes to copy from the old allocation.
+- **Parameters**:
+  - `p: pointer` — a pointer previously obtained from `alloc`/`alloc0`.
+
+- **Examples**:
+
+```nim
+var p = alloc(1)
+echo ptrSize(p) >= 1  # prints true — the real size is never less than requested
+dealloc(p)
+```
 
 ---
 
-### `isSmallChunk`
-```
-proc isSmallChunk(c: PChunk): bool
+## V. Returning pages to the operating system
+
+### 1. `deallocOsPages`
+
+```nim
+proc deallocOsPages()
 ```
 
-Returns `true` when `c.size ≤ SmallChunkSize - smallChunkOverhead()`. The threshold is exactly one page minus the `SmallChunk` struct header.
+**What it does.** Returns **all** pages held by the current thread's heap
+back to the operating system, regardless of whether they're occupied by
+live objects or not. It's meant to be called at thread/program shutdown,
+not during ordinary operation: after the call, any access to memory
+previously allocated on this heap is undefined behavior.
+
+- **Parameters**: none.
+
+- **Examples**:
+
+```nim
+proc workerThreadShutdown() =
+  # ... shutting down; no object on this heap is needed anymore ...
+  deallocOsPages()
+```
 
 ---
 
-### `chunkUnused`
-```
-proc chunkUnused(c: PChunk): bool
-```
+## VI. How it works under the hood (summary overview)
 
-Returns `true` when bit 0 of `c.prevSize` is 0, meaning the chunk is free (not currently allocated). The dual use of `prevSize` for both the previous-chunk size and the in-use flag is a classic boundary-tag trick.
+The public procedures in sections II–III ultimately boil down to two
+internal operations — `rawAlloc`/`rawDealloc` — which decide which of
+three paths to take, depending on the request size:
+
+- **Small block** (fits in a `SmallChunk`) is served with almost no
+  arithmetic: if the active chunk of the right size class has free
+  cells, the head of the list is taken; if there are no cells but there
+  is room in the "accumulator", the accumulator pointer is advanced.
+  Both paths are O(1). Only when there's no suitable chunk at all does
+  the code request a new chunk from the big-block machinery.
+- **Big block** is looked up in the TLSF matrix `a.matrix[fl][sl]` — a
+  two-dimensional table where the `fl`/`sl` ("first level"/"second
+  level" indices) are found almost instantly through bitwise operations
+  on `flBitmap`/`slBitmap` (finding the position of the first set bit),
+  with no list traversal at all. If there's no suitable chunk, new pages
+  are requested from the OS, and any leftover remainder is cut off
+  (`splitChunk`) and placed back into the matrix.
+- **Huge block** (larger than `HugeChunkSize`) is allocated and freed
+  directly through the OS, bypassing the matrix entirely — such blocks
+  are rare and large enough that caching them isn't worthwhile.
+
+When big blocks are freed, adjacent free chunks are **coalesced** into
+one — this guards against heap fragmentation at the cost of an extra
+left/right neighbor check on every `dealloc`.
+
+Tracking where each big chunk begins is handled by two structures: an
+`IntSet` (a bitset of chunk-start addresses — a fast check for "is this
+address the start of a chunk") and an AVL tree of intervals (a fast
+lookup for "which chunk does this pointer fall inside", needed by the
+garbage collector to validate interior pointers).
+
+For the shared heap across threads, one more layer is added: instead of
+immediately locking when freeing a "foreign" block (one allocated by a
+different thread), the operation often simply places the block on the
+owner's lock-free deferred-free list — actual release happens later,
+when the owner itself next calls into the allocator.
 
 ---
 
-### `pageIndex` / `pageAddr`
-```
-proc pageIndex(c: PChunk): int
-proc pageIndex(p: pointer): int
-proc pageAddr(p: pointer): PChunk
-```
+## VII. Practical recipes
 
-Convert between pointer values and page indices (shift right by `PageShift`). `pageAddr` rounds a pointer *down* to its page boundary, giving the `PChunk` header for any pointer within that page. These are used constantly throughout the allocator to move between "a user pointer" and "the chunk it lives in".
+### 1. A fixed-size object pool
+
+```nim
+type
+  Particle = object
+    x, y, vx, vy: float32
+
+proc newParticlePool(capacity: int): ptr UncheckedArray[Particle] =
+  # alloc0 guarantees zero velocities/coordinates for every particle at once.
+  result = cast[ptr UncheckedArray[Particle]](
+    alloc0(capacity * sizeof(Particle)))
+
+proc freeParticlePool(pool: ptr UncheckedArray[Particle]) =
+  dealloc(pool)
+
+var pool = newParticlePool(1000)
+pool[0].x = 5.0
+echo pool[0].x, " ", pool[1].x  # prints 5.0 0.0
+freeParticlePool(pool)
+```
 
 ---
 
-## Thread Safety Summary
+### 2. A growable buffer (like `seq`) via `realloc`
 
-| Operation | Thread safety |
-|---|---|
-| Allocate from thread-local `MemRegion` | Safe — no locks needed |
-| Free to a thread-local `MemRegion` | Safe — lock-free fast path when `c.owner == addr(a)` |
-| Free to a *foreign* `MemRegion` (ARC/ORC) | Lock-free atomic push to `sharedFreeLists` / `sharedFreeListBigChunks` |
-| Free to a *foreign* `MemRegion` (legacy GC) | Not supported by the small-chunk path; big-chunk path is supported |
-| `allocShared` / `deallocShared` (no ARC/ORC) | Lock-guarded via `heapLock` |
-| `allocShared` / `deallocShared` (ARC/ORC) | Delegates to thread-local path (no shared heap distinction) |
-| `allObjects` iteration | Locks the region (`m.locked = true`); must not allocate/free during traversal |
+```nim
+type GrowBuffer = object
+  data: ptr UncheckedArray[byte]
+  len, cap: int
+
+proc push(buf: var GrowBuffer, b: byte) =
+  if buf.len >= buf.cap:
+    # Grow with headroom (doubling) so we don't pay for a realloc on every push:
+    let newCap = max(8, buf.cap * 2)
+    buf.data = cast[ptr UncheckedArray[byte]](realloc(buf.data, newCap))
+    buf.cap = newCap
+  buf.data[buf.len] = b
+  inc buf.len
+
+proc destroy(buf: var GrowBuffer) =
+  dealloc(buf.data)
+  buf.len = 0
+  buf.cap = 0
+
+var buf = GrowBuffer(data: alloc(8), len: 0, cap: 8)
+for i in 0 ..< 20:
+  push(buf, byte(i))
+echo buf.len, " ", buf.cap  # prints 20 32 — capacity grew by doubling
+destroy(buf)
+```
 
 ---
 
-*This document covers `alloc.nim` as found in the Nim runtime library. Internal-only helpers, debug-only code paths, and platform-specific `#ifdef`-equivalent `when` branches have been included only where they are architecturally significant.*
+### 3. Passing a buffer between threads via `allocShared`
+
+```nim
+# The buffer is allocated on the main thread but freed by whichever
+# thread finishes working with it — this is only valid for memory from
+# allocShared/deallocShared, not for regular alloc/dealloc.
+proc makeSharedPayload(size: int): pointer =
+  result = allocShared0(size)
+
+proc consumeAndFree(p: pointer) {.thread.} =
+  # ... process the data in the child thread ...
+  deallocShared(p)  # safe, even though it was allocated on another thread
+
+var payload = makeSharedPayload(4096)
+var worker: Thread[pointer]
+createThread(worker, consumeAndFree, payload)
+joinThread(worker)
+```
+
+---
+
+### 4. Monitoring memory usage
+
+```nim
+proc logMemoryUsage(tag: string) =
+  echo tag, ": occupied=", getOccupiedMem(),
+       " total=", getTotalMem(),
+       " peak=", getMaxMem()
+
+logMemoryUsage("before allocation")
+var buffers: seq[pointer]
+for i in 0 ..< 100:
+  buffers.add(alloc(4096))
+logMemoryUsage("after allocation")
+for p in buffers:
+  dealloc(p)
+logMemoryUsage("after freeing")
+```
+
+---
+
+## VIII. Quick reference table
+
+| Task | Crosses owner/thread | Call |
+|---|---|---|
+| Allocate memory on the thread's heap | — | `alloc(size)` |
+| Allocate zeroed memory on the thread's heap | — | `alloc0(size)` |
+| Free memory allocated by your own thread | — | `dealloc(p)` |
+| Resize a block from your own heap | — | `realloc(p, newSize)` |
+| Resize with zeroing of the new tail | — | `realloc0(p, oldSize, newSize)` |
+| Allocate memory reachable from any thread | cross-thread | `allocShared(size)` |
+| Same, zeroed | cross-thread | `allocShared0(size)` |
+| Free shared memory (from any thread) | cross-thread | `deallocShared(p)` |
+| Resize a shared block | cross-thread | `reallocShared(p, newSize)` |
+| Find the thread heap's free memory | — | `getFreeMem()` |
+| Find the thread heap's total memory | — | `getTotalMem()` |
+| Find the thread heap's occupied memory | — | `getOccupiedMem()` |
+| Find the historical peak usage | — | `getMaxMem()` |
+| Same three metrics for the shared heap | cross-thread | `getFreeSharedMem` / `getTotalSharedMem` / `getOccupiedSharedMem` |
+| Find alloc/dealloc call counts (`-d:nimTypeNames` only) | — | `getMemCounters()` |
+| Find the actual (rounded) size of a block | — | `ptrSize(p)` |
+| Return all of the thread's pages to the OS | — | `deallocOsPages()` |
+
+---
+
+## IX. Summary: which procedure to use
+
+- Need to allocate memory that only the current thread will use →
+  `alloc` (or `alloc0`, if a zeroed initial state matters).
+- Need to free such memory → `dealloc`.
+- Need to resize an already-allocated block while keeping its data →
+  `realloc`; if the growth also needs zeroing → `realloc0`.
+- Need to hand a buffer to another thread, or free it from a thread
+  other than the one that allocated it → use the `allocShared`/
+  `deallocShared` pair from the start, instead of `alloc`/`dealloc`.
+- Need to log or bound memory usage → `getOccupiedMem` for the current
+  value, `getMaxMem` for the historical peak, `getFreeMem`/`getTotalMem`
+  for heap details.
+- Need to know how many bytes are actually available through a pointer
+  (not just what was requested) → `ptrSize`.
+- Need to fully release a thread's memory before it shuts down →
+  `deallocOsPages` (after this call, old pointers into this heap must not
+  be used).
+- Need to understand the chunk-selection/coalescing/TLSF-matrix
+  mechanism itself → section VI, not the individual procedures in this
+  reference — that's internal machinery, not public API.
