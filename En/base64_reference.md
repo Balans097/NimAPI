@@ -1,494 +1,320 @@
-# Nim `base64` Module — Complete Reference
+# base64 — Module Reference
 
-## Overview
+> **Import:** `import std/base64`
+> **Scope:** encoding arbitrary binary data (or strings) into an ASCII-compatible text format (Base64), and decoding it back.
 
-The `base64` module implements **Base64 encoding and decoding** for Nim. Base64 is a binary-to-text encoding scheme that represents arbitrary binary data using only 64 printable ASCII characters: `A–Z`, `a–z`, `0–9`, and two symbol characters (either `+/` in standard mode or `-_` in URL-safe mode).
-
-The core mechanic is simple: every 3 bytes of binary input (24 bits) are regrouped into 4 Base64 digits of 6 bits each, then each 6-bit value is mapped to a printable character. When the input length is not a multiple of 3, `=` padding characters are appended to make the output length a multiple of 4.
-
-```
-Input bytes:   H (0x48)      e (0x65)      l (0x6C)
-Binary:        01001000      01100101      01101100
-Regroup 6-bit: 010010  000110  010101  101100
-Base64 digit:  18      6       21      44
-Char:          S       G       V       s
-```
-
-### Why use Base64?
-
-- **Email attachments** — MIME encoding requires that binary data (images, files) be represented as ASCII text. Base64 is the standard mechanism.
-- **JSON and XML payloads** — embedding binary blobs (images, cryptographic keys, certificates) in text-based formats.
-- **URLs** — the URL-safe variant replaces characters that have special meaning in URLs (`+` → `-`, `/` → `_`).
-- **Data URIs** — embedding images directly in HTML/CSS.
-
-### API stability note
-
-The module is marked **Unstable API**, meaning signatures or behaviour may change in future Nim versions without a deprecation period.
+The module implements the classic Base64 scheme: every three bytes of input data (24 bits) are converted into four characters of the output alphabet (6 bits per character). The module supports both the standard alphabet (RFC 4648, characters `+` and `/`) and the URL-safe/filesystem-safe variant (characters `-` and `_`), as well as line-wrapped MIME encoding for e-mail. A general convention of the module: the `safe: bool` parameter in every encoding procedure selects the alphabet, while decoding always detects the alphabet automatically from the characters themselves.
 
 ---
 
-## Exported API — Quick Reference
+## Table of Contents
 
-| Symbol | Kind | Description |
-|--------|------|-------------|
-| `encode` | proc | Encode a `byte` or `char` array to a Base64 string |
-| `encodeMime` | proc | Encode a string with line-wrapping (MIME format) |
-| `decode` | proc | Decode a Base64 string back to its original bytes |
-| `initDecodeTable` | proc | Build the decoding lookup table (compile-time) |
+I. [Helper Facilities](#helper-facilities)
+&nbsp;&nbsp;&nbsp;1. [`initDecodeTable`](#initdecodetable)
 
----
+II. [Encoding Data](#encoding-data)
+&nbsp;&nbsp;&nbsp;1. [`encode` (from byte/char)](#encode-from-byte-char)
+&nbsp;&nbsp;&nbsp;2. [`encode` (deprecated integer variant)](#encode-deprecated-integer-variant)
+&nbsp;&nbsp;&nbsp;3. [`encodeMime`](#encodemime)
 
-## Alphabets
+III. [Decoding Data](#decoding-data)
+&nbsp;&nbsp;&nbsp;1. [`decode`](#decode)
 
-The module defines two Base64 alphabets as compile-time constants:
+IV. [Practical Recipes](#practical-recipes)
+&nbsp;&nbsp;&nbsp;1. [HTTP Basic Auth header](#recipe-basic-auth)
+&nbsp;&nbsp;&nbsp;2. [URL-safe token](#recipe-url-token)
+&nbsp;&nbsp;&nbsp;3. [Encoding a binary file for embedding in JSON](#recipe-json-embedding)
+&nbsp;&nbsp;&nbsp;4. [MIME attachment for e-mail](#recipe-mime-attachment)
+&nbsp;&nbsp;&nbsp;5. [Safely decoding external data](#recipe-safe-decoding)
 
-**Standard alphabet** (`safe = false`, the default):
+V. [Quick Reference Table](#quick-reference-table)
 
-```
-A B C D E F G H I J K L M N O P Q R S T U V W X Y Z
-a b c d e f g h i j k l m n o p q r s t u v w x y z
-0 1 2 3 4 5 6 7 8 9 + /
-```
-
-**URL-safe alphabet** (`safe = true`, RFC 4648 §5):
-
-```
-A B C D E F G H I J K L M N O P Q R S T U V W X Y Z
-a b c d e f g h i j k l m n o p q r s t u v w x y z
-0 1 2 3 4 5 6 7 8 9 - _
-```
-
-The only difference is the last two characters: `+` and `/` are replaced by `-` and `_`. The URL-safe variant can be used directly in URLs, filenames, and HTTP query parameters without percent-encoding.
-
-The decode table treats both `+` and `-` as value 62, and both `/` and `_` as value 63, so `decode` accepts output from either alphabet without any extra flags.
+VI. [Summary: which procedure to use](#summary-which-procedure-to-use)
 
 ---
 
-## `encode`
+## Helper Facilities
+
+### `initDecodeTable`
+
+```nim
+proc initDecodeTable*(): array[256, char]
+```
+
+**What it does.** Builds the reverse-mapping table: for each of the 256 possible byte values, it computes which 6-bit base64 code that value corresponds to. The result is used as a static lookup table (`decodeTable`) during decoding — instead of re-checking, for every character of the input string, which alphabet range (`A-Z`, `a-z`, `0-9`, `+`/`-`, `/`/`_`) it belongs to, the decoder simply indexes into the ready-made array by `ord(character)`.
+
+**Implementation notes.** The table is pre-filled with `invalidChar` (255) by default — this serves as a marker for "not a valid base64 character". Then, for each character range (`A-Z`, `a-z`, `0-9`), the code is computed via an offset from the ASCII code point, and the characters `+`/`-` and `/`/`_` from both alphabets (standard and URL-safe) are mapped to the same codes, 62 and 63 respectively — so the decoder reads data encoded with either alphabet equally well, without needing to be told which one was used. The procedure is called once at compile time (see the `decodeTable` constant below), so building the table costs nothing at runtime.
+
+- No parameters.
+- Returns `array[256, char]` — a mapping table "character code → 6-bit value", where 255 means "the character is not part of the base64 alphabet".
+
+**Example:**
+
+```nim
+const decodeTable = initDecodeTable()
+echo ord(decodeTable[ord('A')])  # prints 0 — 'A' is the first character of the alphabet
+echo ord(decodeTable[ord('/')])  # prints 63 — the last character of the standard alphabet
+echo ord(decodeTable[ord(' ')])  # prints 255 — a space is not part of the base64 alphabet
+```
+
+---
+
+## Encoding Data
+
+### `encode` (from byte/char)
 
 ```nim
 proc encode*[T: byte|char](s: openArray[T], safe = false): string
 ```
 
-### What it does
+**What it does.** Encodes the sequence of bytes or characters `s` into a base64 string. If `safe` is `true`, the URL-safe and filesystem-safe alphabet is used (`-` and `_` instead of `+` and `/`); otherwise, the standard RFC 4648 alphabet is used. An empty input array produces an empty string.
 
-Encodes the input `s` — an array or sequence of `byte` or `char` values — into a Base64 string and returns it. The result length is always a multiple of 4 (padding `=` signs are added as needed).
+**Implementation notes.** Data is processed in groups of three bytes: each group is "packed" into a 24-bit integer (three consecutive `shl` operations shift the bytes into the high positions of a 32-bit buffer), and that number is then "unpacked" back into four 6-bit chunks via `shr` and an `and 63` mask, with each chunk turned into a character through the alphabet table. If the length of `s` is not a multiple of three, the last incomplete group (1 or 2 bytes) is padded with `=` characters — this is the standard base64 padding mechanism that lets the decoder know how many "real" bytes were in the last group. Complexity is O(n) in the length of the input; the result buffer is pre-allocated in a single `setLen` call to avoid incremental string growth.
 
-### Parameters
+- `s: openArray[T]` — a sequence of bytes (`byte`) or characters (`char`) to encode; not modified.
+- `safe: bool` — if `true`, the URL-safe alphabet (`-`, `_`) is used; defaults to `false` (standard alphabet `+`, `/`).
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `s` | `openArray[byte]` or `openArray[char]` | The data to encode. Accepts arrays, sequences, strings (via `openArray`), and any slice thereof. |
-| `safe` | `bool` (default `false`) | If `true`, use the URL-safe alphabet (`-` and `_` instead of `+` and `/`). |
-
-### Return value
-
-A `string` containing the Base64-encoded representation of `s`. The string contains only ASCII characters and is always 4 bytes longer per 3 bytes of input (plus padding).
-
-### Examples
-
-**String encoding:**
+**Examples:**
 
 ```nim
-import std/base64
+# typical case — encoding a string
+echo encode("Hello World")  # prints "SGVsbG8gV29ybGQ="
 
-assert encode("Hello World") == "SGVsbG8gV29ybGQ="
-assert encode("")            == ""
-assert encode("a")           == "YQ=="   # 1 byte → 2 chars + "=="
-assert encode("ab")          == "YWI="   # 2 bytes → 3 chars + "="
-assert encode("abc")         == "YWJj"   # 3 bytes → 4 chars, no padding
+# encoding an array of integers (bytes) and characters
+echo encode([1'u8, 2, 3])          # prints "AQID"
+echo encode(['h', 'e', 'y'])       # prints "aGV5"
+
+# edge case — empty input
+echo encode("")  # prints ""
+
+# difference between the standard and URL-safe alphabet on the same data
+echo encode("c\xf7>", safe = false)  # prints "Y/c+"
+echo encode("c\xf7>", safe = true)   # prints "Y_c-"
+
+# practical scenario: encoding credentials for basic HTTP authentication
+let credentials = "user:secret"
+echo encode(credentials)  # prints "dXNlcjpzZWNyZXQ="
 ```
-
-The length of the padding reveals how many bytes the last group contained: `==` means 1 byte, `=` means 2 bytes, no padding means a multiple of 3 bytes.
-
-**Character array encoding:**
-
-```nim
-import std/base64
-
-assert encode(['n', 'i', 'm']) == "bmlt"
-assert encode(@['n', 'i', 'm']) == "bmlt"   # seq works too
-```
-
-**Byte array encoding:**
-
-```nim
-import std/base64
-
-assert encode([1'u8, 2, 3, 4, 5]) == "AQIDBAU="
-assert encode([0'u8, 0, 0])       == "AAAA"
-```
-
-**URL-safe encoding:**
-
-```nim
-import std/base64
-
-# The bytes 0x63, 0xf7, 0x3e contain bits that map to '+' and '/'
-# in standard Base64, but '-' and '_' in safe mode:
-assert encode("c\xf7>", safe = false) == "Y/c+"
-assert encode("c\xf7>", safe = true)  == "Y_c-"
-```
-
-**Encoding image data for a data URI:**
-
-```nim
-import std/base64
-
-# Suppose you have raw PNG bytes:
-let pngBytes: seq[byte] = @[0x89'u8, 0x50, 0x4e, 0x47]  # PNG header
-let b64 = encode(pngBytes)
-let dataUri = "data:image/png;base64," & b64
-```
-
-### Deprecated overload
-
-There is a deprecated overload for `openArray[SomeInteger and not byte]` (i.e. `int`, `int32`, etc.). It still works but emits a deprecation warning. Use `byte` or `char` arrays instead:
-
-```nim
-# Deprecated — emits warning:
-# encode([1, 2, 3])
-
-# Correct:
-encode([1'u8, 2, 3])
-```
-
-### How padding works
-
-| Input bytes remaining | Padding appended | Example |
-|-----------------------|-----------------|---------|
-| 0 (exact multiple of 3) | None | `"abc"` → `"YWJj"` |
-| 1 | `==` | `"a"` → `"YQ=="` |
-| 2 | `=` | `"ab"` → `"YWI="` |
 
 ---
 
-## `encodeMime`
+### `encode` (deprecated integer variant)
+
+```nim
+proc encode*[T: SomeInteger and not byte](s: openArray[T], safe = false): string
+  {.deprecated: "use `byte` or `char` instead".}
+```
+
+**What it does.** The same base64 encoding as the main `encode` procedure, but it accepts a sequence of arbitrary integer types (`int`, `uint16`, etc.) rather than only `byte`/`char`. Marked as deprecated: the Nim compiler emits a warning when it is used.
+
+**Implementation notes.** It uses the same internal `encodeImpl` template as the main variant — the implementation is identical; only the type constraint on parameter `T` in the signature differs. Since elements of an integer type wider than `byte` are implicitly truncated to a byte when packed, using types wider than `byte` can lead to data loss or unexpected results — which is why this variant is considered undesirable.
+
+- `s: openArray[T]` — a sequence of integers of any type except `byte`; not modified.
+- `safe: bool` — same meaning as in the main `encode` variant.
+
+**Example:**
+
+```nim
+# compiles, but produces a deprecation warning
+{.push warning[Deprecated]: off.}
+echo encode([1, 2, 3])  # prints "AQID" — same result as the byte-based variant
+{.pop.}
+```
+
+---
+
+### `encodeMime`
 
 ```nim
 proc encodeMime*(s: string, lineLen = 75.Positive, newLine = "\r\n",
                  safe = false): string
 ```
 
-### What it does
+**What it does.** Encodes the string `s` into base64, but splits the result into fixed-length lines of `lineLen` characters, separated by the `newLine` sequence — exactly as required by the MIME format (RFC 2045) for e-mail attachments. If the input string is empty, an empty string is returned without allocating any space for line breaks.
 
-Encodes a string into Base64 with **line-length limiting**, as required by the MIME email standard (RFC 2045). MIME specifies that Base64-encoded email content must be split into lines no longer than 76 characters, separated by `\r\n`. This function wraps the plain `encode` result at `lineLen` characters, inserting `newLine` between each chunk.
+**Implementation notes.** Regular encoding is performed first via `encode`, and the result is then "sliced" into chunks of `lineLen` characters with `newLine` inserted between them. The output buffer is allocated once via `newString` at the exact required size (the length of the encoded string plus however many line breaks that length requires), after which copying is done through the internal `cpy` template, which advances the indices `i` (position in the result) and `j`/`k` (positions in the sources) without any intermediate string concatenation.
 
-The function first computes the full Base64 encoding via `encode`, then slices it into lines. If the encoded result is already short enough to fit in one line (length ≤ `lineLen`) or if `newLine` is empty, the raw Base64 string is returned unchanged.
+- `s: string` — the source string to encode; not modified.
+- `lineLen: Positive` — the maximum length of a single line of encoded output (excluding line-break characters); defaults to 75, as prescribed by MIME.
+- `newLine: string` — the sequence of characters separating output lines; defaults to `"\r\n"` (the e-mail standard).
+- `safe: bool` — the alphabet choice, as in `encode`.
 
-### Parameters
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `s` | `string` | — | The string to encode |
-| `lineLen` | `Positive` | `75` | Maximum number of Base64 characters per line |
-| `newLine` | `string` | `"\r\n"` | Line separator inserted between chunks |
-| `safe` | `bool` | `false` | Use URL-safe alphabet if `true` |
-
-### Return value
-
-A `string` of Base64 characters broken into lines of at most `lineLen` characters, separated by `newLine`. The last line is not terminated with `newLine`.
-
-### Examples
-
-**Standard MIME encoding:**
+**Examples:**
 
 ```nim
-import std/base64
+# typical case — a short line length for illustration
+echo encodeMime("Hello World", 4, "\n")
+# prints:
+# SGVs
+# bG8g
+# V29y
+# bGQ=
 
-let mime = encodeMime("Hello World")
-# Result split at 75 chars (the whole string fits in one line here):
-assert mime == "SGVsbG8gV29ybGQ="
+# edge case — empty string
+echo encodeMime("")  # prints ""
+
+# edge case — the result is shorter than lineLen: no line break is added
+echo encodeMime("Hi", 75, "\n")  # prints "SGk="
+
+# practical scenario — encoding an e-mail body with the defaults (75 characters, CRLF)
+let body = "The full text of the message that needs to be sent as a MIME attachment."
+let mimeBody = encodeMime(body)
+echo mimeBody
 ```
-
-**Short line length for demonstration:**
-
-```nim
-import std/base64
-
-assert encodeMime("Hello World", 4, "\n") == "SGVs\nbG8g\nV29y\nbGQ="
-```
-
-Every 4 Base64 characters are followed by a newline, except the last group.
-
-**Encoding a long binary payload for an email:**
-
-```nim
-import std/base64
-
-let fileData = readFile("document.pdf")
-let mimePayload = encodeMime(fileData)
-# mimePayload is ready to be used as the body of a MIME part:
-# Content-Transfer-Encoding: base64
-# <blank line>
-# <mimePayload>
-```
-
-**Custom line separator:**
-
-```nim
-import std/base64
-
-# Unix line endings with 60-char lines:
-let unix = encodeMime("some binary data here", lineLen = 60, newLine = "\n")
-```
-
-### Relationship to `encode`
-
-`encodeMime` is a thin wrapper around `encode`. It calls `encode(s, safe)` first, then post-processes the result by inserting line separators. If you do not need line-wrapping, use `encode` directly — it is faster.
 
 ---
 
-## `decode`
+## Decoding Data
+
+### `decode`
 
 ```nim
 proc decode*(s: string): string
 ```
 
-### What it does
+**What it does.** Decodes the string `s`, encoded in base64 (using either of the two alphabets — standard or URL-safe), back into the original bytes/string. Leading whitespace characters are skipped, and trailing whitespace and padding `=` characters are discarded automatically. An empty input string produces an empty result. If the input string contains a character that is not part of the base64 alphabet, the procedure raises `ValueError`, identifying the character and its position.
 
-Decodes a Base64 string `s` back into the original binary data and returns it as a `string` (Nim's `string` is a byte sequence, so it can hold arbitrary binary content).
+**Implementation notes.** Decoding proceeds in groups of four input characters, each of which is turned into a 6-bit code via the `decodeTable`; the four 6-bit codes (24 bits) are reassembled into three bytes using `shl`/`shr`/`or`. The main loop — the "hot path" — processes 4-character blocks without accounting for whitespace inside them, for speed; a separate whitespace check (`\n`, `\r`, space) runs before each block, which allows base64 strings split across multiple lines to be decoded correctly (for example, the output of `encodeMime`). The last incomplete group (2 or 3 significant characters) is handled in a separate branch after the main loop — this corresponds to cases where the original data was not a multiple of three bytes and received one or two `=` characters during encoding.
 
-The decoder is **tolerant** in several ways:
-- Leading and embedded whitespace (`\n`, `\r`, ` `) is silently skipped, making it suitable for decoding multi-line MIME payloads directly.
-- Trailing `=` padding characters, spaces, newlines, and carriage returns are stripped before processing.
-- Both the standard alphabet (`+`, `/`) and the URL-safe alphabet (`-`, `_`) are accepted in the same input — `decode` handles both without any flag.
+- `s: string` — a base64-formatted string (standard or URL-safe alphabet, possibly containing whitespace/line breaks and trailing `=`); not modified.
+- Exception: `ValueError`, if the string contains a character outside the base64 alphabet.
 
-If a character in `s` is not a valid Base64 character and is not whitespace or padding, `decode` raises `ValueError` with a message that includes the invalid character, its ordinal value, and its position.
-
-### Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `s` | `string` | A Base64-encoded string (with optional whitespace and padding) |
-
-### Return value
-
-A `string` containing the decoded binary data. For text that was encoded as UTF-8, this is directly usable as a string. For arbitrary binary data, treat it as a byte sequence.
-
-### Examples
-
-**Basic round-trip:**
+**Examples:**
 
 ```nim
-import std/base64
+# typical case
+echo decode("SGVsbG8gV29ybGQ=")  # prints "Hello World"
 
-let original = "Hello World"
-let encoded  = encode(original)
-let decoded  = decode(encoded)
-assert decoded == original
-```
+# leading whitespace is skipped
+echo decode("  SGVsbG8gV29ybGQ=")  # prints "Hello World"
 
-**Decoding with leading whitespace:**
+# edge case — empty string
+echo decode("")  # prints ""
 
-```nim
-import std/base64
+# decoding output produced with the URL-safe alphabet — the table understands both alphabets equally
+echo decode("Y_c-")  # prints "c\xf7>"
 
-assert decode("  SGVsbG8gV29ybGQ=") == "Hello World"
-```
+# error case — an invalid character raises an exception
+doAssertRaises(ValueError):
+  discard decode("not_base64!")
 
-**Decoding a multi-line MIME payload:**
-
-```nim
-import std/base64
-
-let mime = "SGVs\r\nbG8g\r\nV29y\r\nbGQ="
-assert decode(mime) == "Hello World"
-```
-
-Embedded `\r\n` sequences from MIME line breaks are automatically skipped.
-
-**Decoding URL-safe Base64:**
-
-```nim
-import std/base64
-
-# URL-safe encoded by a different tool (uses - and _ instead of + and /):
-let urlSafe = "Y_c-"
-assert decode(urlSafe) == "c\xf7>"
-```
-
-**Decoding binary data:**
-
-```nim
-import std/base64
-
-let b64 = encode([0x89'u8, 0x50, 0x4e, 0x47])   # PNG magic bytes
-let raw = decode(b64)
-assert raw[0] == '\x89'
-assert raw[1] == 'P'
-```
-
-**Error handling for invalid input:**
-
-```nim
-import std/base64
-
-try:
-  let _ = decode("SGVs!G8=")   # '!' is not a valid Base64 character
-except ValueError as e:
-  echo e.msg
-  # Invalid base64 format character `!` (ord 33) at location 4.
-```
-
-### Performance notes
-
-The decoder pre-allocates the output buffer once based on the input length (`(size * 3 / 4) + 6`) to avoid repeated reallocations. The main loop processes 4 input characters at a time in a tight inner loop, with whitespace skipping deferred to the start of each group. Final resizing with `setLen` releases unused bytes.
-
----
-
-## `initDecodeTable`
-
-```nim
-proc initDecodeTable*(): array[256, char]
-```
-
-### What it does
-
-Constructs and returns the 256-entry lookup table used internally by `decode` to convert Base64 characters back to their 6-bit values. The table is computed **at compile time** (called in a `const` block) and stored as a module-level constant, so there is zero runtime cost for table initialisation.
-
-You will almost never call this directly. It is exported mainly for use cases where you want to embed the decode table in generated code, inspect it, or build a custom decoder on top of it.
-
-### Encoding in the table
-
-| Character range | Stored value |
-|----------------|-------------|
-| `A`–`Z` | 0–25 |
-| `a`–`z` | 26–51 |
-| `0`–`9` | 52–61 |
-| `+` and `-` (both) | 62 |
-| `/` and `_` (both) | 63 |
-| All other characters | 255 (`invalidChar`) |
-
-Note that both `+`/`-` and `/`/`_` map to the same values, which is why `decode` transparently handles both standard and URL-safe encoded inputs.
-
-### Example
-
-```nim
-import std/base64
-
-let t = initDecodeTable()
-echo int(t[ord('A')])   # 0
-echo int(t[ord('Z')])   # 25
-echo int(t[ord('a')])   # 26
-echo int(t[ord('+')])   # 62
-echo int(t[ord('-')])   # 62  ← same as '+'
-echo int(t[ord('/')])   # 63
-echo int(t[ord('_')])   # 63  ← same as '/'
-echo int(t[ord('!')])   # 255 ← invalid
+# practical scenario — decoding a multi-line MIME attachment
+let mimeEncoded = "SGVs\nbG8g\nV29y\nbGQ="
+echo decode(mimeEncoded)  # prints "Hello World"
 ```
 
 ---
 
-## Complete Practical Examples
+## Practical Recipes
 
-### Round-trip encode and decode
+### HTTP Basic Auth header
+<a id="recipe-basic-auth"></a>
+
+The HTTP Basic Auth scheme requires the username and password to be joined with a colon and base64-encoded, then sent in the `Authorization` header.
 
 ```nim
-import std/base64
+proc buildBasicAuthHeader(username, password: string): string =
+  let credentials = username & ":" & password
+  result = "Basic " & encode(credentials)
 
-proc roundTrip(data: string) =
-  let enc = encode(data)
-  let dec = decode(enc)
-  assert dec == data, "Round-trip failed for: " & data
-
-roundTrip("Hello, World!")
-roundTrip("")
-roundTrip("a")
-roundTrip("\x00\x01\x02\xFF")   # binary data
-roundTrip("Unicode: café naïve résumé")
+echo buildBasicAuthHeader("admin", "s3cr3t")
+# prints "Basic YWRtaW46czNjcjN0"
 ```
 
 ---
 
-### Embedding a file as a Base64 constant
+### URL-safe token
+<a id="recipe-url-token"></a>
+
+If the encoded value needs to be passed as part of a URL (for example, a password-reset token), the URL-safe alphabet is used — it contains no `+` or `/` characters that would require additional escaping in a URL.
 
 ```nim
-import std/base64
-
-# Embed a small resource at compile time:
-const smallIcon = staticRead("icon.png")
-const iconBase64 = encode(smallIcon)
-# iconBase64 is a compile-time constant string
-
-proc getDataUri(): string =
-  "data:image/png;base64," & iconBase64
-```
-
----
-
-### MIME email attachment
-
-```nim
-import std/base64
-
-proc buildMimePart(filename, contentType, data: string): string =
-  result = ""
-  result &= "Content-Type: " & contentType & "\r\n"
-  result &= "Content-Disposition: attachment; filename=\"" & filename & "\"\r\n"
-  result &= "Content-Transfer-Encoding: base64\r\n"
-  result &= "\r\n"
-  result &= encodeMime(data)
-  result &= "\r\n"
-
-let csvData = "name,value\nalice,42\nbob,99\n"
-echo buildMimePart("report.csv", "text/csv", csvData)
-```
-
----
-
-### URL-safe token generation
-
-```nim
-import std/base64
 import std/random
 
-proc generateToken(byteLen: int = 24): string =
-  ## Generates a URL-safe Base64 token from random bytes.
-  ## byteLen=24 produces a 32-character token.
+proc generateUrlSafeToken(byteLen: int): string =
   var bytes = newSeq[byte](byteLen)
   for i in 0 ..< byteLen:
     bytes[i] = byte(rand(255))
-  encode(bytes, safe = true)
+  result = encode(bytes, safe = true)
 
-randomize()
-echo generateToken()   # e.g. "xK3mV-R_tQpLwZ8sNfYcAj2u"
+let token = generateUrlSafeToken(16)
+echo token  # e.g., "3F9k_Q-1mZaC7bXpNvR8sw"
 ```
 
 ---
 
-### Decoding a Base64 JSON field
+### Encoding a binary file for embedding in JSON
+<a id="recipe-json-embedding"></a>
+
+Binary data (for example, the contents of a small image) cannot be placed directly into a JSON string — it is first encoded as base64.
 
 ```nim
-import std/base64
-import std/json
+import std/[json, os]
 
-let payload = """{"name": "document", "data": "SGVsbG8gV29ybGQ="}"""
-let j = parseJson(payload)
+proc fileToJsonField(path: string): JsonNode =
+  let raw = readFile(path)
+  let payload = encode(raw)
+  result = %*{"filename": extractFilename(path), "data": payload}
 
-let rawData = decode(j["data"].getStr())
-echo rawData   # "Hello World"
+let node = fileToJsonField("logo.png")
+echo pretty(node)
 ```
 
 ---
 
-## Error Conditions
+### MIME attachment for e-mail
+<a id="recipe-mime-attachment"></a>
 
-| Situation | Error type | Message format |
-|-----------|-----------|----------------|
-| Invalid Base64 character in `decode` input | `ValueError` | `Invalid base64 format character \`X\` (ord N) at location P.` |
+A classic task: preparing an e-mail attachment per MIME — with line wrapping at 76 characters (the de-facto standard used by many mail clients) and CRLF line breaks.
 
-There is no error for:
-- Trailing `=` padding (silently stripped)
-- Embedded or leading whitespace (silently skipped)
-- Missing padding (handled gracefully for the last 2–3 characters)
+```nim
+proc buildMimeAttachment(content: string): string =
+  result = encodeMime(content, lineLen = 76, newLine = "\r\n")
+
+let attachment = buildMimeAttachment("The contents of the attachment, which can be arbitrarily long.")
+echo attachment
+```
 
 ---
 
-## See Also
+### Safely decoding external data
+<a id="recipe-safe-decoding"></a>
 
-- [`std/hashes`](https://nim-lang.org/docs/hashes.html) — hash computation for Nim types
-- [`std/md5`](https://nim-lang.org/docs/md5.html) — MD5 checksum algorithm
-- [`std/sha1`](https://nim-lang.org/docs/sha1.html) — SHA-1 checksum algorithm
-- [RFC 4648](https://tools.ietf.org/html/rfc4648) — The Base16, Base32, and Base64 Data Encodings standard
-- [RFC 2045](https://tools.ietf.org/html/rfc2045) — MIME Part One: Format of Internet Message Bodies
+Data arriving from outside the program (from the network, from a user) cannot be decoded blindly — the input string may not be valid base64, in which case `decode` raises an exception that must be caught.
+
+```nim
+proc tryDecodeBase64(s: string): tuple[ok: bool, value: string] =
+  try:
+    result = (ok: true, value: decode(s))
+  except ValueError:
+    result = (ok: false, value: "")
+
+let (ok1, value1) = tryDecodeBase64("SGVsbG8=")
+echo ok1, " ", value1  # prints "true Hello"
+
+let (ok2, value2) = tryDecodeBase64("not valid data!!!")
+echo ok2  # prints "false"
+```
+
+---
+
+## Quick Reference Table
+
+| Task | Modifies argument | Returns |
+|---|---|---|
+| Encode bytes/characters as base64 | no | a new `string` |
+| Encode as URL-safe base64 | no | a new `string` (parameter `safe = true`) |
+| Encode long text for MIME/e-mail | no | a new `string`, split into lines |
+| Decode a base64 string back into data | no | a new `string` |
+| Obtain the decode table manually | no | `array[256, char]` |
+
+---
+
+## Summary: which procedure to use
+
+- Need to encode bytes, characters, or a string as base64 → use `encode`.
+- Need the result to be safe for direct use in a URL or filename without escaping → use `encode(..., safe = true)`.
+- Need to prepare a long base64 text for an e-mail attachment (MIME) with line breaks → use `encodeMime`.
+- Need to encode a sequence of integers other than `byte` → use `encode`, converting the data to `byte` or `char` first (the deprecated integer variant is not recommended).
+- Need to recover the original data from a base64 string (in either alphabet) → use `decode`.
+- Need to build the character-to-6-bit-code mapping table yourself (for example, for a custom implementation) → use `initDecodeTable`.

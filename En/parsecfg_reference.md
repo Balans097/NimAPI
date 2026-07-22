@@ -1,208 +1,192 @@
-# `parsecfg` Module Reference
+# parsecfg — module reference
 
-> **Nim Standard Library — `std/parsecfg`**
-> High-performance parser for INI-style configuration files, plus a complete
-> read/write API for structured config data.
-> Supports both a streaming pull-parser interface and a high-level table-based interface.
+> **Import:** `import std/parsecfg`
+> **Purpose:** parsing and writing configuration files in a format close to Windows `.ini`, but with support for Nim string literals (ordinary, raw, and triple-quoted strings).
+
+The module solves two related but distinct tasks. First, it offers a
+low-level streaming (event-based) parser: `CfgParser` reads the input
+stream token by token and, through `next`, hands back one event at a time
+(`CfgEvent`) — a section start, a key-value pair, a `--key:value`
+command-line-style option, or an error. This layer keeps nothing buffered
+in memory as a whole and is well suited to large files or to custom
+processing logic.
+
+Second, built on top of the event parser is a table-based API: the `Config`
+type (a table of tables) together with `loadConfig`/`writeConfig`/
+`getSectionValue`/`setSectionKey`, which load the whole file into memory and
+provide convenient "section → key → value" access. This is the layer to
+reach for whenever full control over the parsing process isn't needed.
+
+A module-wide convention: for keys of the form `--key:value` (written in
+the file with a double dash), the table API stores the key name together
+with its `"--"` prefix, to distinguish them from ordinary `key=value`
+pairs. The empty string `""` used as a section name denotes the "common"
+section — whatever is written in the file before the first `[section]`
+header.
 
 ---
 
 ## Table of Contents
 
-1. [Overview & Mental Model](#overview--mental-model)
-2. [Config File Syntax](#config-file-syntax)
-3. [Types](#types)
-   - [CfgEventKind](#cfgeventkind)
-   - [CfgEvent](#cfgevent)
-   - [CfgParser](#cfgparser)
-   - [Config](#config)
-4. [Low-Level Pull Parser API](#low-level-pull-parser-api)
-   - [open](#open)
-   - [close](#close)
-   - [next](#next)
-   - [getLine](#getline)
-   - [getColumn](#getcolumn)
-   - [getFilename](#getfilename)
-   - [errorStr](#errorstr)
-   - [warningStr](#warningstr)
-   - [ignoreMsg](#ignoremsg)
-5. [High-Level Config Table API](#high-level-config-table-api)
-   - [newConfig](#newconfig)
-   - [loadConfig (from stream)](#loadconfig-from-stream)
-   - [loadConfig (from file)](#loadconfig-from-file)
-   - [getSectionValue](#getsectionvalue)
-   - [setSectionKey](#setsectionkey)
-   - [delSectionKey](#deletesectionkey)
-   - [delSection](#deletesection)
-   - [sections](#sections)
-   - [writeConfig (to stream)](#writeconfig-to-stream)
-   - [writeConfig (to file)](#writeconfig-to-file)
-   - [$ (to string)](#-to-string)
-6. [Which API to Use?](#which-api-to-use)
-7. [Complete Worked Examples](#complete-worked-examples)
+I. [Types and helpers](#types-and-helpers)
+   1. [`CfgEventKind`](#cfgeventkind)
+   2. [`CfgEvent`](#cfgevent)
+   3. [`CfgParser`](#cfgparser)
+   4. [`Config`](#config)
+II. [Streaming parser — the low-level event API](#streaming-parser--the-low-level-event-api)
+   1. [`open`](#open)
+   2. [`next`](#next)
+   3. [`close`](#close)
+   4. [`getColumn`, `getLine`, `getFilename`](#getcolumn-getline-getfilename)
+   5. [`errorStr`, `warningStr`, `ignoreMsg`](#errorstr-warningstr-ignoremsg)
+III. [Table API — loading and building configuration](#table-api--loading-and-building-configuration)
+   1. [`newConfig`](#newconfig)
+   2. [`loadConfig` (from a stream)](#loadconfig-from-a-stream)
+   3. [`loadConfig` (from a file)](#loadconfig-from-a-file)
+   4. [`getSectionValue`](#getsectionvalue)
+   5. [`setSectionKey`](#setsectionkey)
+   6. [`delSection`](#delsection)
+   7. [`delSectionKey`](#delsectionkey)
+   8. [`sections` (iterator)](#sections-iterator)
+IV. [Writing and serializing configuration](#writing-and-serializing-configuration)
+   1. [`writeConfig` (to a stream)](#writeconfig-to-a-stream)
+   2. [`writeConfig` (to a file)](#writeconfig-to-a-file)
+   3. [`` `$` ``](#-)
+V. [Practical recipes](#practical-recipes)
+   1. [Building a configuration from scratch and saving it to a file](#building-a-configuration-from-scratch-and-saving-it-to-a-file)
+   2. [Reading with default values](#reading-with-default-values)
+   3. [Updating an existing file (round-trip)](#updating-an-existing-file-round-trip)
+   4. [Iterating over all sections and keys](#iterating-over-all-sections-and-keys)
+   5. [Custom event handling that ignores unknown entries](#custom-event-handling-that-ignores-unknown-entries)
+VI. [Quick reference table](#quick-reference-table)
+VII. [Summary: which procedure to use](#summary-which-procedure-to-use)
 
 ---
 
-## Overview & Mental Model
-
-The `parsecfg` module provides two distinct ways to work with configuration files:
-
-**1. Pull Parser (low-level)** — stream-oriented, event-by-event processing. You call `next()` in a loop and receive one `CfgEvent` at a time. Memory-efficient for huge files; lets you react to each token as it is parsed.
-
-**2. Config Table (high-level)** — the entire file is loaded into an `OrderedTableRef` that maps sections to key-value pairs. Simple, familiar, and sufficient for almost all real applications.
-
-```
-Config file on disk
-        │
-        │  loadConfig(filename)        ← high-level: one call loads everything
-        ▼
-  Config (table)
-  ├─ getSectionValue(section, key)
-  ├─ setSectionKey(section, key, val)
-  ├─ delSectionKey / delSection
-  ├─ writeConfig(filename)
-  └─ $dict  →  string
-
-        │
-        │  open(parser, stream, ...)   ← low-level: manual event loop
-        ▼
-  CfgParser
-  └─ loop: next(parser) → CfgEvent
-       ├─ cfgSectionStart  → e.section
-       ├─ cfgKeyValuePair  → e.key, e.value
-       ├─ cfgOption        → e.key, e.value
-       ├─ cfgError         → e.msg
-       └─ cfgEof           → break
-```
-
-The `Config` type is an alias for `OrderedTableRef[string, OrderedTableRef[string, string]]` — a table of sections, each holding an ordered table of key-value strings. Section insertion order and key insertion order are preserved.
-
----
-
-## Config File Syntax
-
-The parser understands a superset of the Windows `.ini` format. Key points:
-
-**Sections** are declared with `[SectionName]` on their own line. Section names are trimmed of surrounding whitespace. The empty section `""` is the implicit global section before the first `[...]` header.
-
-**Key-value pairs** use `=` or `:` as the delimiter:
-```ini
-name = hello
-port: 8080
-```
-
-**Command-line options** start with `--` and use `:` as their delimiter. They appear as `cfgOption` events (stored with the `--` prefix in the `Config` table):
-```ini
---threads:on
---opt:speed
-```
-
-**String literals** follow Nim conventions:
-- Bare symbols: `value`, `nim-lang.org`, `some/path`
-- Quoted strings: `"hello world"` — support escape sequences (`\n`, `\t`, `\x41`, etc.)
-- Raw strings: `r"C:\Users\nim"` — backslashes are literal, no escape processing
-- Triple-quoted strings: `"""multi-line value"""` — span multiple lines
-
-**Comments** begin with `#` or `;` and extend to end of line:
-```ini
-# this is a comment
-; so is this
-key = value  # inline comments NOT supported — the # is part of the value
-```
-
-**Inline comments are not supported.** Everything after the `=` or `:` to the end of the token is the value, including `#` characters.
-
-**Whitespace** around keys, values, and section names is stripped.
-
-**Keys without values** are valid — `value` is set to `""`.
-
-A complete example:
-```ini
-charset = "utf-8"
-
-[Package]
-name = "hello"
---threads:on
-
-[Author]
-name = "nim-lang"
-website = "nim-lang.org"
-```
-
----
-
-## Types
+## Types and helpers
 
 ### `CfgEventKind`
 
 ```nim
-type CfgEventKind* = enum
-  cfgEof,          ## end of file reached
-  cfgSectionStart, ## a [section] header was parsed
-  cfgKeyValuePair, ## a key=value or key:value pair was parsed
-  cfgOption,       ## a --key:value command-line option was parsed
-  cfgError         ## a parse error occurred (no exception is raised)
+type
+  CfgEventKind* = enum
+    cfgEof,          ## end of file reached
+    cfgSectionStart, ## a `[section]` header has been recognized
+    cfgKeyValuePair, ## a `key=value` pair has been recognized
+    cfgOption,       ## a `--key=value` command-line option has been recognized
+    cfgError         ## an error occurred during parsing
 ```
 
-The discriminator for `CfgEvent`. Every call to `next()` returns an event of one of these five kinds. Errors do not raise exceptions — they arrive as `cfgError` events so the caller can decide how to handle them.
+**What it does.** An enum of the event kinds `next` can return. It's the
+"tag" of the `CfgEvent` variant object — the value of `kind` determines
+which fields of the event are populated.
+
+- **Values:**
+  - `cfgEof` — the stream is exhausted, parsing is done;
+  - `cfgSectionStart` — a `[name]` section header was encountered;
+  - `cfgKeyValuePair` — an ordinary `key=value` or `key:value` pair was encountered;
+  - `cfgOption` — a `--key:value` entry was encountered (outside a section it belongs to the "common" part of the file);
+  - `cfgError` — a syntax error; parsing does not stop with an exception, the event simply reports it.
 
 ---
 
 ### `CfgEvent`
 
 ```nim
-type CfgEvent* = object of RootObj
-  case kind*: CfgEventKind
-  of cfgEof:         (nothing)
-  of cfgSectionStart:
-    section*: string
-  of cfgKeyValuePair, cfgOption:
-    key*:   string
-    value*: string   ## "" if no value was given
-  of cfgError:
-    msg*: string
+type
+  CfgEvent* = object of RootObj
+    case kind*: CfgEventKind
+    of cfgEof: nil
+    of cfgSectionStart:
+      section*: string
+    of cfgKeyValuePair, cfgOption:
+      key*, value*: string
+    of cfgError:
+      msg*: string
 ```
 
-A variant object describing a single parsed token. The fields available depend on `kind`:
+**What it does.** The variant object-event returned by `next`. The set of
+available fields depends on `kind`: `cfgSectionStart` only has `section`,
+`cfgKeyValuePair`/`cfgOption` have a `key`/`value` pair, and `cfgError` has
+`msg`. Accessing a field that doesn't belong to the current `kind` (for
+example, `section` on an event with `kind == cfgError`) is a runtime error,
+as with any Nim variant object.
 
-| `kind` | Accessible fields | What they contain |
-|---|---|---|
-| `cfgEof` | — | nothing; signals the end of input |
-| `cfgSectionStart` | `section` | name of the section (without `[` `]`) |
-| `cfgKeyValuePair` | `key`, `value` | the key and its value; `value = ""` if none given |
-| `cfgOption` | `key`, `value` | the option name without `--`; `value` may be `""` |
-| `cfgError` | `msg` | formatted error string with file, line, column |
+- **Parameters/fields:**
+  - `kind: CfgEventKind` — determines the active variant;
+  - `section: string` — the section name (only for `cfgSectionStart`);
+  - `key, value: string` — the key and value (for `cfgKeyValuePair`/`cfgOption`); `value == ""` if no value was given in the file;
+  - `msg: string` — the error text, already formatted with the file name, line, and column (only for `cfgError`).
+
+**Example:**
+
+```nim
+import std/streams
+
+var p: CfgParser
+open(p, newStringStream("[Package]\nname=hello\n"), "example.ini")
+while true:
+  var e = next(p)
+  case e.kind
+  of cfgEof: break
+  of cfgSectionStart:
+    echo "section: " & e.section  # prints: section: Package
+  of cfgKeyValuePair:
+    echo e.key & " = " & e.value  # prints: name = hello
+  of cfgOption:
+    echo "option: " & e.key
+  of cfgError:
+    echo e.msg
+close(p)
+```
 
 ---
 
 ### `CfgParser`
 
 ```nim
-type CfgParser* = object of BaseLexer
+type
+  CfgParser* = object of BaseLexer
 ```
 
-The parser object for the low-level pull-parser API. Declare it as `var`, initialise with `open()`, drive with `next()`, release with `close()`. Its internal state is managed by the module — do not access its fields directly.
+**What it does.** An opaque parser object: it inherits from `BaseLexer`
+(`std/lexbase`) and holds the current input buffer, read position, line
+number, and a pre-read (lookahead) token. No fields are exposed publicly —
+access to the state goes only through `getLine`, `getColumn`, and
+`getFilename`.
+
+**Implementation notes.** The parser is built as a one-token-lookahead
+parser: right after `open`, and after every `next` call, the parser
+already has the next token "sitting" in it, ready to be examined. This
+simplifies `next` — there's no need to backtrack when deciding what
+construct has started (a key-value pair or a section header); looking one
+token ahead is enough.
+
+- **Parameters:** no public fields; the object is declared as a `var` variable and passed by reference into every procedure of the module (`open`, `next`, `close`, and so on).
 
 ---
 
 ### `Config`
 
 ```nim
-type Config* = OrderedTableRef[string, OrderedTableRef[string, string]]
+type
+  Config* = OrderedTableRef[string, OrderedTableRef[string, string]]
 ```
 
-The data structure used by the high-level API. It is a reference type (heap-allocated), so you can pass it around without copying. Sections and keys preserve their insertion order.
+**What it does.** An in-memory table representation of an entire
+configuration file: the outer ordered table maps a section name to an
+inner ordered table of "key → value". Insertion order of both sections
+and keys is preserved — this matters when the table is later written back
+out with `writeConfig`, so the file doesn't get shuffled on every save.
 
-- The **outer table** maps section names (`string`) to inner tables.
-- The **inner table** maps key names to string values.
-- The **global section** (keys before the first `[...]` header) is stored under the empty string key `""`.
-- `--option` keys are stored with their `--` prefix: `dict["Section"]["--threads"]`.
+- **Parameters:**
+  - outer key — the section name (`""` — the common section, everything before the first `[...]`);
+  - inner key — the parameter name within a section (for `--options` it's stored together with the `"--"` prefix);
+  - value — a string (the module performs no type conversion — all values are stored as text).
 
 ---
 
-## Low-Level Pull Parser API
-
-Use this API when you need to process a config file as a stream, react to individual events, or handle files too large to load entirely.
+## Streaming parser — the low-level event API
 
 ### `open`
 
@@ -210,42 +194,36 @@ Use this API when you need to process a config file as a stream, react to indivi
 proc open*(c: var CfgParser, input: Stream, filename: string, lineOffset = 0)
 ```
 
-**What it does:** Initialises the parser and binds it to an input `Stream`. After `open`, the parser is positioned just before the first token; calling `next()` fetches the first event.
+**What it does.** Initializes parser `c` with the given input stream.
+`filename` is only used in error/warning message text and has no effect
+on parsing itself. `lineOffset` shifts the line numbering used in those
+same messages — useful when the text being parsed is an insert inside
+another document and the line numbers need to match the original
+document.
 
-**Parameters:**
-- `input` — any `Stream` object: `newFileStream`, `newStringStream`, etc.
-- `filename` — used only for error message formatting; it does not need to be a real path.
-- `lineOffset` — shifts the reported line number by this amount. Useful when the config content is embedded inside a larger file and you want error messages to show the absolute line.
+**Implementation notes.** Calls `lexbase.open` to set up buffered stream
+reading, resets any previous token state (`tkInvalid`, empty literal),
+adds `lineOffset` to the line counter, and immediately reads the first
+token via the internal `rawGetTok`. That's why, right after `open`, the
+parser is already ready for the first `next` call — the lookahead token
+is already in place.
+
+- **Parameters:**
+  - `c: var CfgParser` — the parser being initialized;
+  - `input: Stream` — an already-open input stream;
+  - `filename: string` — the file name for error messages;
+  - `lineOffset: int` — line-numbering offset, default `0`.
+
+**Example:**
 
 ```nim
-import std/[streams, parsecfg]
+import std/streams
 
-var s = newFileStream("app.cfg", fmRead)
+var f = newFileStream("example.ini", fmRead)
+doAssert f != nil, "failed to open the file"
 var p: CfgParser
-open(p, s, "app.cfg")
-# p is now ready; call next(p) to start reading events
-```
-
-```nim
-# Parse a config string embedded in code
-var s = newStringStream("[db]\nhost=localhost\nport=5432\n")
-var p: CfgParser
-open(p, s, "<embedded>")
-```
-
----
-
-### `close`
-
-```nim
-proc close*(c: var CfgParser)
-```
-
-**What it does:** Closes the parser and its associated stream. Always call `close` when done — the idiomatic pattern is `defer: p.close()` immediately after `open`.
-
-```nim
-open(p, stream, "config.ini")
-defer: p.close()
+open(p, f, "example.ini")
+close(p)
 ```
 
 ---
@@ -256,127 +234,129 @@ defer: p.close()
 proc next*(c: var CfgParser): CfgEvent
 ```
 
-**What it does:** Advances the parser to the next event and returns it. This is the main driver of the pull-parser loop. Each call consumes exactly one logical token from the input.
+**What it does.** Returns the next parsing event and advances the parser.
+This is the single procedure that drives parsing — it's called in a loop
+until `cfgEof` is returned. On encountering a `[` token, the parser
+expects a symbol followed by a closing `]`; if either of those doesn't
+match, `cfgError` is returned, but parsing doesn't stop with an
+exception — `next` can keep being called afterward.
 
-The loop pattern is always the same: call `next`, dispatch on `e.kind`, break when `cfgEof`.
+**Implementation notes.** The kind of event to build is decided from the
+current lookahead token `c.tok.kind`:
+
+- `tkEof` → `cfgEof`;
+- `tkDashDash` (`--`) → the next token is read and the result is built via
+  the helper `getKeyValPair` with `kind = cfgOption`;
+- `tkSymbol` → also `getKeyValPair`, but with `kind = cfgKeyValuePair`;
+- `tkBracketLe` (`[`) → a `tkSymbol` is expected, then `tkBracketRi` (`]`);
+  a mismatch at either step produces `cfgError` stating what was expected;
+- any other token (`tkInvalid`, `tkEquals`, `tkColon`, a stray
+  `tkBracketRi`) → `cfgError` "invalid token".
+
+The common technique — reading a `key` plus an optional separator
+(`=` or `:`) plus a `value` — lives in `getKeyValPair`: if no `=`/`:`
+follows the key, the value stays an empty string (`value == ""`), which
+matches what's documented for the `CfgEvent.value` field.
+
+- **Parameters:** `c: var CfgParser` — the parser to pull an event from.
+
+**Example (boundary case — a key without a value):**
 
 ```nim
-while true:
-  var e = next(p)
-  case e.kind
-  of cfgEof:          break
-  of cfgSectionStart: echo "section: ", e.section
-  of cfgKeyValuePair: echo e.key, " = ", e.value
-  of cfgOption:       echo "--", e.key, ": ", e.value
-  of cfgError:        echo "error: ", e.msg
+import std/streams
+
+var p: CfgParser
+open(p, newStringStream("key_without_value\n"), "[stream]")
+let e = next(p)
+doAssert e.kind == cfgKeyValuePair
+doAssert e.key == "key_without_value"
+doAssert e.value == ""  # no value was given — it stays empty
+close(p)
 ```
 
-**Important:** The parser does **not** raise exceptions on malformed input. Syntax errors arrive as `cfgError` events. If you receive `cfgError`, it is safe to continue calling `next()` to attempt recovery — or you can break out of the loop immediately.
+**Example (error case):**
+
+```nim
+import std/streams
+
+var p: CfgParser
+open(p, newStringStream("[section\n"), "[stream]")  # no closing ]
+let e = next(p)
+doAssert e.kind == cfgError
+echo e.msg  # prints a formatted message with file name, line, and column
+close(p)
+```
 
 ---
 
-### `getLine`
+### `close`
 
 ```nim
-proc getLine*(c: CfgParser): int
+proc close*(c: var CfgParser)
 ```
 
-**What it does:** Returns the 1-based line number at the parser's current position. Useful when you want to include position information in your own error or warning messages.
+**What it does.** Closes the parser and the input stream associated with
+it. Called once after `next` has returned `cfgEof` (or after parsing is
+aborted early).
+
+- **Parameters:** `c: var CfgParser`.
 
 ---
 
-### `getColumn`
+### `getColumn`, `getLine`, `getFilename`
 
 ```nim
 proc getColumn*(c: CfgParser): int
-```
-
-**What it does:** Returns the 0-based column number at the parser's current position.
-
----
-
-### `getFilename`
-
-```nim
+proc getLine*(c: CfgParser): int
 proc getFilename*(c: CfgParser): string
 ```
 
-**What it does:** Returns the `filename` string that was passed to `open`. Used internally by `errorStr` and `warningStr` to produce consistent, well-formatted messages.
+**What they do.** Three simple getters for the parser's current position:
+column, line, and the file name passed to `open`. Mostly used for custom
+error messages — the standard `errorStr`/`warningStr` already use them
+internally.
+
+- **Parameters:** `c: CfgParser` (no `var` — read-only access to the state) in all three cases.
+
+**Example:**
+
+```nim
+import std/streams
+
+var p: CfgParser
+open(p, newStringStream("a=b\n"), "cfg.ini")
+discard next(p)
+echo getFilename(p) & ":" & $getLine(p) & ":" & $getColumn(p)
+close(p)
+```
 
 ---
 
-### `errorStr`
+### `errorStr`, `warningStr`, `ignoreMsg`
 
 ```nim
 proc errorStr*(c: CfgParser, msg: string): string
-```
-
-**What it does:** Formats `msg` into the standard error message format:
-
-```
-filename(line, column) Error: msg
-```
-
-Use this when you detect a *semantic* error in your own code — for example, a required key is missing — and want the message to look consistent with parser-generated errors.
-
-```nim
-if not dict.hasKey("db"):
-  echo p.errorStr("required section [db] is missing")
-  # → "config.ini(42, 1) Error: required section [db] is missing"
-```
-
----
-
-### `warningStr`
-
-```nim
 proc warningStr*(c: CfgParser, msg: string): string
-```
-
-**What it does:** Like `errorStr`, but formats the message with `Warning:` instead of `Error:`:
-
-```
-filename(line, column) Warning: msg
-```
-
-Use for non-fatal issues — unknown keys that are being ignored, deprecated settings, etc.
-
-```nim
-echo p.warningStr("unknown key '" & key & "' will be ignored")
-# → "config.ini(15, 1) Warning: unknown key 'legacy_mode' will be ignored"
-```
-
----
-
-### `ignoreMsg`
-
-```nim
 proc ignoreMsg*(c: CfgParser, e: CfgEvent): string
 ```
 
-**What it does:** Returns a standard "this entry is being ignored" warning message for any `CfgEvent`. It delegates to `warningStr` internally, so the message includes file, line, and column. For `cfgError` events, it returns `e.msg` unchanged. For `cfgEof`, it returns `""`.
+**What they do.** They format a text message of the form
+`filename(line, column) Error: text` (or `Warning:` respectively), using
+the parser's current position. `ignoreMsg` is a specialized variant for
+when calling code decides to ignore an event (for example, an unknown
+section or an unsupported option): the wording depends on `e.kind` —
+"section ignored", "key ignored", "command ignored"; for `cfgError` the
+error text itself is returned, and for `cfgEof` an empty string.
 
-This is a convenience shortcut for the common pattern where you want to silently skip an unknown section or key but still log a warning about it.
+- **Parameters:**
+  - `errorStr`/`warningStr`: `c: CfgParser`, `msg: string` — arbitrary message text;
+  - `ignoreMsg`: `c: CfgParser`, `e: CfgEvent` — the event being ignored.
 
-```nim
-while true:
-  var e = next(p)
-  case e.kind
-  of cfgEof: break
-  of cfgSectionStart:
-    if e.section notin ["Package", "Author"]:
-      echo p.ignoreMsg(e)  # "config.ini(8, 1) Warning: section ignored: Unknown"
-  of cfgKeyValuePair:
-    if e.key == "legacy":
-      echo p.ignoreMsg(e)  # "config.ini(9, 1) Warning: key ignored: legacy"
-  else: discard
-```
+**Example:** see the [«Custom event handling that ignores unknown entries»](#custom-event-handling-that-ignores-unknown-entries) recipe below — that's the main scenario `ignoreMsg` is used for.
 
 ---
 
-## High-Level Config Table API
-
-This API loads the entire config into memory as a nested ordered table. For most applications, this is all you need.
+## Table API — loading and building configuration
 
 ### `newConfig`
 
@@ -384,57 +364,81 @@ This API loads the entire config into memory as a nested ordered table. For most
 proc newConfig*(): Config
 ```
 
-**What it does:** Creates and returns an empty `Config` table. Use this as the starting point when you want to build a config from scratch in code and then write it to disk.
+**What it does.** Creates an empty configuration table — the starting
+point for building a settings file programmatically (as opposed to
+reading one from disk).
+
+- **Parameters:** none.
+
+**Example:**
 
 ```nim
-import std/parsecfg
-
-var cfg = newConfig()
-cfg.setSectionKey("", "charset", "utf-8")
-cfg.setSectionKey("Server", "host", "localhost")
-cfg.setSectionKey("Server", "port", "8080")
+var dict = newConfig()
+doAssert len(dict) == 0
 ```
 
 ---
 
-### `loadConfig` (from stream)
+### `loadConfig` (from a stream)
 
 ```nim
 proc loadConfig*(stream: Stream, filename: string = "[stream]"): Config
 ```
 
-**What it does:** Parses a config from an open `Stream` and returns the result as a `Config` table. `filename` is optional and used only for error messages. Parsing stops at the first `cfgError` event.
+**What it does.** Reads the entire stream through an internal `CfgParser`
+and builds a `Config` in memory, grouping key-value pairs by the most
+recently seen section.
 
-Use this when you already have a `Stream` — for example, a string stream created from a config string embedded in your code, a network connection, or a decompressed in-memory buffer.
+**Implementation notes.** Internally this is the same
+`while true: next(p)` loop shown in the low-level API examples, except
+the result isn't printed but accumulated: the `curSection` variable holds
+the name of the last section seen (initially `""` — the common section);
+on `cfgKeyValuePair` the pair is placed into the current section's inner
+table; on `cfgOption` it goes into the same table, but the key gets a
+`"--"` prefix so it isn't confused with an ordinary key when written back
+out later. An important detail: on `cfgError` the loop simply stops
+(`break`) — no exception is raised, and the file will be loaded only up
+to the error point, with no warning that this happened.
+
+- **Parameters:**
+  - `stream: Stream` — an open stream containing configuration content;
+  - `filename: string` — the name used in error messages, defaults to `"[stream]"`.
+
+**Example:**
 
 ```nim
-import std/[streams, parsecfg]
+import std/streams
 
-let cfgText = """
-[server]
-host = localhost
-port = 8080
-"""
-let cfg = loadConfig(newStringStream(cfgText))
-echo cfg.getSectionValue("server", "host")  # "localhost"
+let dict = loadConfig(newStringStream("[Package]\nname=hello\n"))
+doAssert getSectionValue(dict, "Package", "name") == "hello"
 ```
 
 ---
 
-### `loadConfig` (from file)
+### `loadConfig` (from a file)
 
 ```nim
 proc loadConfig*(filename: string): Config
 ```
 
-**What it does:** Opens the file at `filename`, parses its contents, and returns the result as a `Config`. This is the most common entry point for reading a real config file. Works in both compiled code and NimScript (the NimScript path uses `readFile` internally).
+**What it does.** The same thing, but takes a file path on disk rather
+than a ready-made stream.
+
+**Implementation notes.** Under normal execution it opens the file
+(`open`, `fmRead`), wraps it in a `FileStream`, and delegates to the
+stream-based overload, closing the stream when done (`defer`). When
+compiled for `nimvm` (for example, in NimScript), a workaround is used
+instead: the file is read in full via `readFile` into a string and
+wrapped in a `StringStream`, since low-level stream `open` through
+`{.importc.}` isn't available in NimScript.
+
+- **Parameters:** `filename: string` — the path to the configuration file.
+
+**Example:**
 
 ```nim
-import std/parsecfg
-
-let cfg = loadConfig("settings.ini")
-echo cfg.getSectionValue("Database", "host")
-echo cfg.getSectionValue("Database", "port", "5432")  # default if not found
+let dict = loadConfig("config.ini")
+echo getSectionValue(dict, "Package", "name")
 ```
 
 ---
@@ -445,25 +449,23 @@ echo cfg.getSectionValue("Database", "port", "5432")  # default if not found
 proc getSectionValue*(dict: Config, section, key: string, defaultVal = ""): string
 ```
 
-**What it does:** Returns the value associated with `key` in the given `section`. If the section does not exist, or the key does not exist within the section, returns `defaultVal` (empty string by default). Never raises an exception.
+**What it does.** Returns the value of key `key` in section `section`; if
+the section or the key doesn't exist, it returns `defaultVal` instead of
+raising an error or an exception. This is the main way to safely read
+values out of an already-loaded configuration.
 
-- To access the **global section** (keys before the first `[...]`), pass `section = ""`.
-- To access a `--option` entry, pass its full name including `--`: `key = "--threads"`.
+- **Parameters:**
+  - `dict: Config` — the configuration table;
+  - `section: string` — the section name (`""` — the common section);
+  - `key: string` — the key name;
+  - `defaultVal: string` — the fallback value if the key isn't found; defaults to `""`.
+
+**Example:**
 
 ```nim
-let cfg = loadConfig("app.ini")
-
-# Read with no default (returns "" if missing)
-let host = cfg.getSectionValue("Database", "host")
-
-# Read with an explicit default
-let port = cfg.getSectionValue("Database", "port", "5432")
-
-# Read from the global section
-let charset = cfg.getSectionValue("", "charset")
-
-# Read a command-line option stored in the config
-let threads = cfg.getSectionValue("Build", "--threads")
+let dict = loadConfig(newStringStream("[Package]\nname=hello\n"))
+doAssert getSectionValue(dict, "Package", "name") == "hello"
+doAssert getSectionValue(dict, "Package", "version", "0.1.0") == "0.1.0"  # no such key — the fallback was returned
 ```
 
 ---
@@ -474,35 +476,21 @@ let threads = cfg.getSectionValue("Build", "--threads")
 proc setSectionKey*(dict: var Config, section, key, value: string)
 ```
 
-**What it does:** Sets `key` to `value` in the given `section`. If the section does not yet exist, it is created. If the key already exists, its value is overwritten. Preserves the existing insertion order for both sections and keys.
+**What it does.** Sets the value of a key in the given section. If the
+section doesn't exist yet, it's created automatically — calling code
+doesn't need to check for its presence beforehand.
 
-- Use `section = ""` for the global section.
-- Use a key starting with `--` to store a command-line option entry.
+- **Parameters:**
+  - `dict: var Config` — the mutable configuration table;
+  - `section, key, value: string` — the section, the key, and the new value.
 
-```nim
-var cfg = loadConfig("app.ini")
-cfg.setSectionKey("Database", "host", "db.example.com")
-cfg.setSectionKey("Database", "port", "5432")
-cfg.setSectionKey("", "version", "2")     # global key
-cfg.setSectionKey("Build", "--opt", "speed")  # --option
-cfg.writeConfig("app.ini")
-```
-
----
-
-### `delSectionKey`
+**Example:**
 
 ```nim
-proc delSectionKey*(dict: var Config, section, key: string)
-```
-
-**What it does:** Removes a single key from a section. If removing this key would leave the section empty, the section itself is also removed from the table. Does nothing if the section or key does not exist.
-
-```nim
-var cfg = loadConfig("app.ini")
-cfg.delSectionKey("Author", "website")   # remove one key
-cfg.delSectionKey("Legacy", "old_key")   # safe even if section doesn't exist
-cfg.writeConfig("app.ini")
+var dict = newConfig()
+setSectionKey(dict, "Package", "name", "hello")
+setSectionKey(dict, "Package", "--threads", "on")  # a command-line-style option key
+doAssert getSectionValue(dict, "Package", "name") == "hello"
 ```
 
 ---
@@ -513,312 +501,272 @@ cfg.writeConfig("app.ini")
 proc delSection*(dict: var Config, section: string)
 ```
 
-**What it does:** Removes an entire section and all its keys from the config table. Does nothing if the section does not exist.
+**What it does.** Deletes an entire section along with all of its keys.
+If no section with that name exists, nothing happens — a silent no-op,
+same as `del` on plain Nim tables.
+
+- **Parameters:** `dict: var Config`, `section: string`.
+
+**Example:**
 
 ```nim
-var cfg = loadConfig("app.ini")
-cfg.delSection("DeprecatedSettings")  # remove the whole section
-cfg.writeConfig("app.ini")
+var dict = loadConfig(newStringStream("[Author]\nname=nim-lang\n"))
+delSection(dict, "Author")
+doAssert getSectionValue(dict, "Author", "name", "no author") == "no author"
 ```
 
 ---
 
-### `sections`
+### `delSectionKey`
+
+```nim
+proc delSectionKey*(dict: var Config, section, key: string)
+```
+
+**What it does.** Deletes a single key inside a section. If the section
+has no keys left after the deletion, the section itself is removed too —
+so the table doesn't accumulate empty entries.
+
+**Implementation notes.** Before deleting, `dict[section].len == 1` is
+checked: if the key being removed was the only one, `dict.del(section)`
+is called (removing the whole section); otherwise the key is deleted from
+the inner table directly. If the section or the key doesn't exist, the
+call silently does nothing.
+
+- **Parameters:** `dict: var Config`, `section: string`, `key: string`.
+
+**Example:**
+
+```nim
+var dict = loadConfig(newStringStream("[Author]\nname=nim-lang\nwebsite=nim-lang.org\n"))
+delSectionKey(dict, "Author", "website")
+doAssert getSectionValue(dict, "Author", "website", "no website") == "no website"
+doAssert getSectionValue(dict, "Author", "name") == "nim-lang"  # the section stays, since another key remains
+```
+
+---
+
+### `sections` (iterator)
 
 ```nim
 iterator sections*(dict: Config): lent string
 ```
 
-**What it does:** Iterates over all section names in the `Config`, in insertion order. Yields each section name as a `lent string` (a borrowed reference — do not store it past the loop body without copying it first).
+**What it does.** Iterates over all section names in the table, including
+the empty string `""` (the common section) if it holds at least one key.
+The iteration order is insertion order, since `Config` is an ordered
+table.
 
-The global section `""` is included if it exists in the table.
+- **Parameters:** `dict: Config` — the table being iterated over.
+
+**Example:**
 
 ```nim
-let cfg = loadConfig("app.ini")
-
-for section in cfg.sections:
-  echo "Found section: ", section
-
-# If you need to store sections:
-var sectionNames: seq[string]
-for s in cfg.sections:
-  sectionNames.add(s)  # copy via add is safe
+let dict = loadConfig(newStringStream("charset=utf-8\n[Package]\nname=hello\n"))
+for section in sections(dict):
+  echo "section: \"" & section & "\""
+# prints:
+# section: ""
+# section: "Package"
 ```
 
 ---
 
-### `writeConfig` (to stream)
+## Writing and serializing configuration
+
+### `writeConfig` (to a stream)
 
 ```nim
 proc writeConfig*(dict: Config, stream: Stream)
 ```
 
-**What it does:** Serialises the entire `Config` table to an open `Stream` in valid INI format. The output is suitable for reading back with `loadConfig`. Sections are written in insertion order; keys within each section are also in insertion order.
+**What it does.** Writes the table's contents to a stream in `.ini`
+format, section by section, in insertion order. The empty section `""`
+is written without a `[...]` header. Comments are not supported — they're
+dropped when a file is read, so, naturally, there's nowhere for them to
+come from when writing (this is explicitly noted in the source
+documentation of the procedure).
 
-> **Note:** Comments present in the original file are **not preserved**. Because the `Config` type only stores key-value data, any `#` or `;` comments from the source file are lost when you load and re-write the config.
+**Implementation notes.** Writing is essentially the reverse of parsing.
+For each section name and each value, the module decides whether it needs
+quoting using a single criterion: does the string contain only "safe"
+characters (`SymChars` — letters, digits, `_`, space, `./\-`, and bytes
+`\x80..\xFF`)? If so, it's written as-is; if not, the string is wrapped
+in ordinary quotes `"..."`, and if it already contains a `"`, in triple
+quotes `"""..."""` instead, to avoid colliding with the closing quote.
+Keys with a `"--"` prefix are recognized by their first two characters and
+written with a colon (`--key:value`) instead of `=`, as required by the
+command-line-option syntax. Escaping of backslashes and line breaks
+within a value is handled by the internal `replace` helper.
 
-String values that contain special characters or spaces are automatically quoted or triple-quoted as needed. `--option` keys are written with the `--` prefix and `:` as their delimiter.
+- **Parameters:**
+  - `dict: Config` — the table being written;
+  - `stream: Stream` — a stream open for writing.
+
+**Example:**
 
 ```nim
-import std/[streams, parsecfg]
+import std/streams
 
-var cfg = newConfig()
-cfg.setSectionKey("Server", "host", "localhost")
-cfg.setSectionKey("Server", "port", "8080")
-
-var s = newStringStream()
-cfg.writeConfig(s)
-echo s.data
-# [Server]
-# host=localhost
-# port=8080
+var dict = newConfig()
+setSectionKey(dict, "", "charset", "utf-8")
+setSectionKey(dict, "Package", "name", "hello")
+setSectionKey(dict, "Package", "--threads", "on")
+let stream = newStringStream()
+writeConfig(dict, stream)
+echo stream.data
+# prints:
+# charset=utf-8
+# [Package]
+# name=hello
+# --threads:on
 ```
 
 ---
 
-### `writeConfig` (to file)
+### `writeConfig` (to a file)
 
 ```nim
 proc writeConfig*(dict: Config, filename: string)
 ```
 
-**What it does:** Writes the `Config` to a file, creating or overwriting it. This is the companion to `loadConfig(filename)` and the natural way to persist changes.
+**What it does.** The same thing, but opens the file for writing itself
+(mode `fmWrite`, meaning any previous file contents are fully overwritten)
+and closes it when done.
+
+- **Parameters:** `dict: Config`, `filename: string` — the destination file path.
+
+**Example:**
 
 ```nim
-var cfg = loadConfig("settings.ini")
-cfg.setSectionKey("App", "version", "2.0")
-cfg.writeConfig("settings.ini")  # overwrite in place
+var dict = loadConfig("config.ini")
+setSectionKey(dict, "Author", "name", "nim-lang")
+writeConfig(dict, "config.ini")
 ```
 
 ---
 
-### `$` (to string)
+### `` `$` ``
 
 ```nim
 proc `$`*(dict: Config): string
 ```
 
-**What it does:** Serialises the `Config` to a Nim string in INI format. Equivalent to calling `writeConfig` on a `newStringStream()` and reading the result. Useful for debugging, logging, or diffing config state in tests.
+**What it does.** Returns the table's contents as a string in the same
+format `writeConfig` uses — handy for debug printing or comparison in
+tests without writing to disk.
+
+**Implementation notes.** Wraps `writeConfig` around a `StringStream`,
+then retrieves the accumulated data via `stream.data`.
+
+- **Parameters:** `dict: Config`.
+
+**Example:**
 
 ```nim
-var cfg = newConfig()
-cfg.setSectionKey("", "charset", "utf-8")
-cfg.setSectionKey("Package", "name", "myapp")
-echo $cfg
-# charset=utf-8
-# [Package]
-# name=myapp
+var dict = newConfig()
+setSectionKey(dict, "Package", "name", "hello")
+doAssert $dict == "[Package]\nname=hello\n"
 ```
 
 ---
 
-## Which API to Use?
+## Practical recipes
 
-| Scenario | Recommended API |
-|---|---|
-| Read a config file, access a few values | `loadConfig(filename)` + `getSectionValue` |
-| Create a new config in code, write to disk | `newConfig()` + `setSectionKey` + `writeConfig` |
-| Modify an existing config file | `loadConfig` + `setSectionKey`/`delSectionKey` + `writeConfig` |
-| Process a very large config file without loading all of it | pull-parser: `open` + `next` loop + `close` |
-| Validate a config file structure or check for unknown keys | pull-parser: `open` + `next` loop, use `ignoreMsg`/`warningStr` |
-| Embed a config string directly in code | `loadConfig(newStringStream(...))` |
-| List all sections in a config | `sections` iterator |
-
----
-
-## Complete Worked Examples
-
-### Example 1: Full pull-parser loop with all event types
+### Building a configuration from scratch and saving it to a file
 
 ```nim
-import std/[streams, parsecfg]
+var dict = newConfig()
+setSectionKey(dict, "", "charset", "utf-8")           # the common section
+setSectionKey(dict, "Package", "name", "hello")
+setSectionKey(dict, "Package", "--threads", "on")      # a command-line option
+setSectionKey(dict, "Author", "name", "nim-lang")
+setSectionKey(dict, "Author", "website", "nim-lang.org")
+writeConfig(dict, "generated.ini")
+```
 
-let cfgText = """
-charset = "utf-8"
-[Package]
-name = hello
---threads:on
-[Author]
-name = nim-lang
-website = nim-lang.org
-"""
+### Reading with default values
 
-var s = newStringStream(cfgText)
+```nim
+let dict = loadConfig("config.ini")
+let
+  charset = getSectionValue(dict, "", "charset", "utf-8")
+  threads = getSectionValue(dict, "Package", "--threads", "off")
+  version = getSectionValue(dict, "Package", "version", "0.0.0")
+echo charset & " / " & threads & " / " & version
+```
+
+### Updating an existing file (round-trip)
+
+```nim
+var dict = loadConfig("config.ini")
+setSectionKey(dict, "Author", "name", "nim-lang")
+delSectionKey(dict, "Author", "website")   # dropped a stale key
+writeConfig(dict, "config.ini")            # rewrote the file in place
+```
+
+### Iterating over all sections and keys
+
+```nim
+let dict = loadConfig("config.ini")
+for section in sections(dict):
+  echo "[" & section & "]"
+  for key, value in pairs(dict[section]):
+    echo "  " & key & " = " & value
+```
+
+### Custom event handling that ignores unknown entries
+
+```nim
+import std/streams
+
+const knownSections = ["Package", "Author"]
+
 var p: CfgParser
-open(p, s, "<string>")
-defer: p.close()
-
+open(p, newFileStream("config.ini"), "config.ini")
 while true:
-  let e = next(p)
+  var e = next(p)
   case e.kind
-  of cfgEof:
-    echo "--- end of config ---"
-    break
+  of cfgEof: break
   of cfgSectionStart:
-    echo "[", e.section, "]"
+    if not contains(knownSections, e.section):
+      echo ignoreMsg(p, e)  # a warning with file/line/column info
   of cfgKeyValuePair:
-    echo "  ", e.key, " = ", e.value
+    echo e.key & " = " & e.value
   of cfgOption:
-    echo "  --", e.key, ": ", e.value
+    echo ignoreMsg(p, e)   # options aren't supported in this scenario
   of cfgError:
-    echo "ERROR: ", e.msg
-    break  # stop on first error; or continue to attempt recovery
-```
-
-Output:
-```
-  charset = utf-8
-[Package]
-  name = hello
-  --threads: on
-[Author]
-  name = nim-lang
-  website = nim-lang.org
---- end of config ---
+    echo errorStr(p, e.msg)
+close(p)
 ```
 
 ---
 
-### Example 2: Build a config programmatically and write to disk
+## Quick reference table
 
-```nim
-import std/parsecfg
-
-var cfg = newConfig()
-
-# Global keys (no section)
-cfg.setSectionKey("", "charset", "utf-8")
-
-# [Package] section
-cfg.setSectionKey("Package", "name", "myapp")
-cfg.setSectionKey("Package", "version", "1.0.0")
-cfg.setSectionKey("Package", "--threads", "on")
-
-# [Database] section
-cfg.setSectionKey("Database", "host", "localhost")
-cfg.setSectionKey("Database", "port", "5432")
-cfg.setSectionKey("Database", "password", r"s3cr3t\pass")  # contains backslash
-
-cfg.writeConfig("generated.ini")
-echo $cfg
-```
+| Task | Mutates `dict` | Returns |
+|---|---|---|
+| Parse a file event by event | no (only the `CfgParser`) | a `CfgEvent` via `next` |
+| Load an entire file into a table | no | a new `Config` (`loadConfig`) |
+| Create an empty configuration | no | a new `Config` (`newConfig`) |
+| Read a value with a fallback | no | `string` (`getSectionValue`) |
+| Set/create a key | yes | — (`setSectionKey`) |
+| Delete an entire section | yes | — (`delSection`) |
+| Delete a single key (and the section if it becomes empty) | yes | — (`delSectionKey`) |
+| Iterate over section names in order | no | `string` per iteration (`sections`) |
+| Save to a stream/file | no | — (`writeConfig`) |
+| Get the contents as a string | no | `string` (`` `$` ``) |
 
 ---
 
-### Example 3: Load, modify, and save an existing config
+## Summary: which procedure to use
 
-```nim
-import std/parsecfg
-
-# Load
-var cfg = loadConfig("app.ini")
-
-# Read current values
-let oldHost = cfg.getSectionValue("Database", "host", "localhost")
-echo "Current host: ", oldHost
-
-# Modify
-cfg.setSectionKey("Database", "host", "db.production.example.com")
-cfg.setSectionKey("Database", "port", "5432")
-
-# Remove a deprecated key
-cfg.delSectionKey("Legacy", "oldSetting")
-
-# Remove an entire section that is no longer needed
-cfg.delSection("Debug")
-
-# Save back
-cfg.writeConfig("app.ini")
-```
-
----
-
-### Example 4: Validate a config against a required schema
-
-Using the pull-parser to check that required sections and keys are present:
-
-```nim
-import std/[streams, parsecfg, sets]
-
-proc validateConfig(path: string): bool =
-  let required = toHashSet(["host", "port", "password"])
-  var found: HashSet[string]
-  var inDB = false
-
-  var s = newFileStream(path, fmRead)
-  var p: CfgParser
-  open(p, s, path)
-  defer: p.close()
-
-  while true:
-    let e = next(p)
-    case e.kind
-    of cfgEof: break
-    of cfgError:
-      echo p.errorStr(e.msg)
-      return false
-    of cfgSectionStart:
-      inDB = (e.section == "Database")
-    of cfgKeyValuePair:
-      if inDB: found.incl(e.key)
-    else: discard
-
-  let missing = required - found
-  if missing.len > 0:
-    for key in missing:
-      echo p.warningStr("required key '" & key & "' missing from [Database]")
-    return false
-  return true
-
-if validateConfig("app.ini"):
-  echo "Config is valid"
-else:
-  echo "Config validation failed"
-```
-
----
-
-### Example 5: List all sections and their key counts
-
-```nim
-import std/parsecfg
-
-let cfg = loadConfig("app.ini")
-
-for section in cfg.sections:
-  let label = if section == "": "<global>" else: "[" & section & "]"
-  # Count keys in this section
-  var count = 0
-  if cfg.hasKey(section):
-    for _ in cfg[section].pairs:
-      inc count
-  echo label, ": ", count, " key(s)"
-```
-
----
-
-### Example 6: Round-trip test — write, read back, verify
-
-```nim
-import std/parsecfg
-
-var original = newConfig()
-original.setSectionKey("", "encoding", "utf-8")
-original.setSectionKey("Net", "host", "example.com")
-original.setSectionKey("Net", "port", "443")
-original.setSectionKey("Net", "--tls", "on")
-
-# Write to a temp file
-original.writeConfig("/tmp/roundtrip.ini")
-
-# Read back
-let loaded = loadConfig("/tmp/roundtrip.ini")
-
-# Verify
-assert loaded.getSectionValue("", "encoding") == "utf-8"
-assert loaded.getSectionValue("Net", "host") == "example.com"
-assert loaded.getSectionValue("Net", "port") == "443"
-assert loaded.getSectionValue("Net", "--tls") == "on"
-
-echo "Round-trip successful"
-```
+- Need to read a whole file and work with it like a dictionary → `loadConfig` + `getSectionValue`.
+- Need to build a configuration programmatically and write it to disk → `newConfig` + `setSectionKey` + `writeConfig`.
+- Need to read values that might be missing without extra checks → `getSectionValue` with the `defaultVal` parameter.
+- Need to delete a single parameter without worrying about an emptied-out section → `delSectionKey`.
+- Need to delete a section entirely → `delSection`.
+- Need to iterate over all sections in file order → the `sections` iterator.
+- Need full control over parsing (custom error formatting, partial loading, streaming without buffering the whole file) → the low-level `CfgParser` with `open`/`next`/`close`.
+- Need to tell the user that an unrecognized directive was ignored → `ignoreMsg`.
+- Need to build an error/warning message with line and column info manually → `errorStr`/`warningStr`.
