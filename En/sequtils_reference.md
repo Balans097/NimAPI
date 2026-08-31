@@ -1,1056 +1,672 @@
-# sequtils — Module Reference
+# sequtils — module reference
 
 > **Import:** `import std/sequtils`
-> **Scope:** functional-style operations over `openArray` types — `seq`, `string`, and `array` (creation, mapping, filtering, folding, searching, and working with pairs of sequences).
+> **Scope:** functional operations over `openArray`-based types (`seq`, `array`, `string`) — creation, transformation, filtering, searching, folding, and combining sequences.
 
-The `sequtils` module doesn't introduce its own data types — it builds a
-functional layer on top of `seq`, `string`, and `array`, adding
-functional-programming-style operations: `map`/`filter`/`fold`, extremum
-search, merging and splitting pairs of sequences, generation and
-deduplication. A consistent naming convention runs through the module:
-many procedures have an "expression" variant with an `-It` suffix
-(`mapIt`, `filterIt`, `allIt`, `anyIt`, `countIt`, `keepItIf`) — these are
-templates that, instead of taking a `proc`, accept an arbitrary
-**expression** using an implicitly injected `it` variable. Another
-convention is the pair of "non-mutating / in-place mutating" procedures:
-`filter` returns a new sequence, `keepIf` mutates the original; `map`
-returns a new sequence, `apply` mutates the original.
+The module is not limited to `seq` — despite the name, every procedure applies equally to `array` and `string`, since both fall under `openArray`. The library is consistently built around several "mutating / non-mutating" pairs (for example, `filter`/`keepIf`, `map`/`apply`): the non-mutating variant returns a new sequence without touching the original, while the mutating variant works "in place" and requires a `var` parameter. Many functions have counterparts with the `It` suffix (`mapIt`, `filterIt`, `anyIt`...) — these are templates that, instead of an explicit `proc` argument, use an implicitly injected `it` variable, removing the need to write out `proc(x: T): S = ...` in full each time.
 
 ---
 
-## Table of Contents
+## Table of contents
 
-I. [Creating and Generating Sequences](#i-creating-and-generating-sequences)
-   1. [`toSeq`](#1-toseq)
-   2. [`repeat`](#2-repeat)
-   3. [`newSeqWith`](#3-newseqwith)
-   4. [`cycle`](#4-cycle)
-   5. [`concat`](#5-concat)
-   6. [`distribute`](#6-distribute)
-   7. [`items` (over a closure iterator)](#7-items-over-a-closure-iterator)
+I. [Creating and generating sequences](#creating-and-generating-sequences)
+  1. [`concat`](#concat)
+  2. [`cycle`](#cycle)
+  3. [`repeat`](#repeat)
+  4. [`newSeqWith`](#newseqwith)
+  5. [`toSeq`](#toseq)
 
-II. [Mapping](#ii-mapping)
-   1. [`map`](#1-map)
-   2. [`mapIt`](#2-mapit)
-   3. [`apply` (three variants)](#3-apply-three-variants)
-   4. [`applyIt`](#4-applyit)
-   5. [`mapLiterals`](#5-mapliterals)
+II. [Transforming elements](#transforming-elements)
+  1. [`map`](#map)
+  2. [`mapIt`](#mapit)
+  3. [`apply` (variant A, in-place mutating function with no return value)](#apply-variant-a)
+  4. [`apply` (variant B, function T → T)](#apply-variant-b)
+  5. [`apply` (variant C, side effect only)](#apply-variant-c)
+  6. [`applyIt`](#applyit)
+  7. [`mapLiterals`](#mapliterals)
 
-III. [Filtering](#iii-filtering)
-   1. [`filter` (proc)](#1-filter-proc)
-   2. [`filter` (iterator)](#2-filter-iterator)
-   3. [`filterIt`](#3-filterit)
-   4. [`keepIf`](#4-keepif)
-   5. [`keepItIf`](#5-keepitif)
+III. [Filtering](#filtering)
+  1. [`filter` (proc)](#filter-proc)
+  2. [`filter` (iterator)](#filter-iterator)
+  3. [`filterIt`](#filterit)
+  4. [`keepIf`](#keepif)
+  5. [`keepItIf`](#keepitif)
 
-IV. [Searching, Predicate Checks, and Aggregate Metrics](#iv-searching-predicate-checks-and-aggregate-metrics)
-   1. [`findIt`](#1-findit)
-   2. [`any` / `anyIt`](#2-any--anyit)
-   3. [`all` / `allIt`](#3-all--allit)
-   4. [`count` / `countIt`](#4-count--countit)
-   5. [`min` / `max`](#5-min--max)
-   6. [`minIndex` / `maxIndex`](#6-minindex--maxindex)
-   7. [`minmax`](#7-minmax)
+IV. [Searching and condition checks](#searching-and-condition-checks)
+  1. [`findIt`](#findit)
+  2. [`all` / `allIt`](#all--allit)
+  3. [`any` / `anyIt`](#any--anyit)
+  4. [`countIt`](#countit)
+  5. [`count`](#count)
 
-V. [Folding](#v-folding)
-   1. [`foldl` (without a starting value)](#1-foldl-without-a-starting-value)
-   2. [`foldl` (with a starting value)](#2-foldl-with-a-starting-value)
-   3. [`foldr`](#3-foldr)
+V. [Aggregation and folding](#aggregation-and-folding)
+  1. [`foldl` (without an initial value)](#foldl-without-an-initial-value)
+  2. [`foldl` (with an initial value)](#foldl-with-an-initial-value)
+  3. [`foldr`](#foldr)
+  4. [`min` / `max` (with a comparator)](#min--max-with-a-comparator)
+  5. [`minIndex` / `maxIndex`](#minindex--maxindex)
+  6. [`minmax`](#minmax)
 
-VI. [Working with Pairs of Sequences](#vi-working-with-pairs-of-sequences)
-   1. [`zip`](#1-zip)
-   2. [`unzip`](#2-unzip)
+VI. [In-place sequence modification](#in-place-sequence-modification)
+  1. [`addUnique`](#addunique)
+  2. [`deduplicate`](#deduplicate)
+  3. [`delete`](#delete)
+  4. [`insert`](#insert)
 
-VII. [In-Place Composition Changes](#vii-in-place-composition-changes)
-   1. [`addUnique`](#1-addunique)
-   2. [`deduplicate`](#2-deduplicate)
-   3. [`delete`](#3-delete)
-   4. [`insert`](#4-insert)
+VII. [Combining and splitting sequences](#combining-and-splitting-sequences)
+  1. [`zip`](#zip)
+  2. [`unzip`](#unzip)
+  3. [`distribute`](#distribute)
 
-VIII. [Practical Recipes](#viii-practical-recipes)
-   1. [Top-N Leaders by Criterion](#1-top-n-leaders-by-criterion)
-   2. [Deduplication Preserving First Occurrence](#2-deduplication-preserving-first-occurrence)
-   3. [Round-Robin Task Distribution Across Workers](#3-round-robin-task-distribution-across-workers)
-   4. [Merging Two Parallel Lists into a Report](#4-merging-two-parallel-lists-into-a-report)
-   5. [Rolling Statistics over a Numeric Log](#5-rolling-statistics-over-a-numeric-log)
+VIII. [Iterators for functional style](#iterators-for-functional-style)
+  1. [`items` (for a closure iterator)](#items-for-a-closure-iterator)
 
-IX. [Quick Reference Table](#ix-quick-reference-table)
+IX. [Practical recipes](#practical-recipes)
+  1. [Top-N leaders by value](#top-n-leaders-by-value)
+  2. [Removing duplicates while preserving order](#removing-duplicates-while-preserving-order)
+  3. [Round-robin distribution of tasks across workers](#round-robin-distribution-of-tasks-across-workers)
+  4. [Word frequency analysis](#word-frequency-analysis)
+  5. [Combining two parallel lists into a report](#combining-two-parallel-lists-into-a-report)
+  6. [Rolling statistics over a numeric log](#rolling-statistics-over-a-numeric-log)
 
-X. [Summary: Which Procedure to Choose](#x-summary-which-procedure-to-choose)
+X. [Quick reference table](#quick-reference-table)
 
----
-
-## I. Creating and Generating Sequences
-
-### 1. `toSeq`
-
-```nim
-template toSeq*(iter: untyped): untyped
-```
-
-**What it does.** Turns any iterable thing — a range, a set, an
-iterator, anything with `items` — into a plain `seq`. It's the only
-procedure in the module explicitly designed to accept **iterators**
-(including inline ones), not just `openArray`.
-
-**Implementation notes.** `toSeq` isn't a single procedure but a
-three-branch dispatcher selected at compile time via `when
-compiles(...)`. `toSeq1` handles ordinary "typed" containers (`seq`,
-`array`, `set`, ranges) — if the object has `len`, the result is
-allocated at the right size up front (`newSeq[OutType](len(s2))`), saving
-on reallocations; if `len` isn't available, elements accumulate via
-`add`. `toSeq2` handles named closure iterators. The final branch is the
-fallback for untyped inline iterators like `toSeq(myInlineIterator(3))`.
-The branch is chosen without any input from the caller — it just writes
-`toSeq(iter)`.
-
-- **Parameters:**
-  - `iter: untyped` — anything that supports traversal: a range
-    (`1..5`), a set, a `seq`/`array`, a named or inline iterator.
-
-**Examples:**
-
-```nim
-let
-  range = 1..5
-  numbers = toSeq(range)
-assert numbers == @[1, 2, 3, 4, 5]
-
-iterator evens(n: int): int =
-  for i in 0..<n:
-    if i mod 2 == 0:
-      yield i
-
-let result = toSeq(evens(10))
-assert result == @[0, 2, 4, 6, 8]
-
-# Edge case: an empty range yields an empty sequence.
-let empty = toSeq(1..0)
-assert empty == newSeq[int]()
-```
+XI. [Summary: which procedure to choose](#summary-which-procedure-to-choose)
 
 ---
 
-### 2. `repeat`
+## Creating and generating sequences
 
-```nim
-proc repeat*[T](x: T, n: Natural): seq[T]
-```
-
-**What it does.** Builds a new sequence made of `n` copies of the same
-value `x`. If `n == 0`, an empty sequence is returned — no exception is
-raised.
-
-**Implementation notes.** The implementation is trivial and linear: the
-result is allocated at the exact size up front via `newSeq[T](n)` (a
-single allocation, no subsequent `add` calls), then every index is
-simply overwritten with a copy of `x`. Complexity is O(n) in both time
-and memory.
-
-- **Parameters:**
-  - `x: T` — the value to replicate (copied `n` times).
-  - `n: Natural` — how many copies to make; `Natural` guarantees
-    negative values are rejected at the type level.
-
-**Examples:**
-
-```nim
-let total = repeat(5, 3)
-assert total == @[5, 5, 5]
-
-# Edge case: n = 0 — an empty sequence.
-let empty = repeat("x", 0)
-assert empty == newSeq[string]()
-
-# Practical scenario: building a separator string.
-let separator = repeat('-', 20)
-assert len(separator) == 20
-```
-
----
-
-### 3. `newSeqWith`
-
-```nim
-template newSeqWith*(len: int, init: untyped): untyped
-```
-
-**What it does.** Creates a new sequence of length `len`, where each
-element is initialized by a separate evaluation of the `init`
-expression — unlike `repeat`, `init` is evaluated fresh for **every**
-index, which matters for non-primitive values (nested `seq`s, random
-numbers) that can't simply be copied.
-
-**Implementation notes.** The result type is inferred from
-`typeof(init)`. For types that support byte-wise copying
-(`supportsCopyMem`), `newSeqUninit` is used — a fast allocation that
-skips zero-initializing memory, since it will be overwritten immediately
-in the loop anyway; for other types, an ordinary `newSeq` is used. The
-loop `for i in 0 ..< newLen` re-evaluates `init` on every iteration, so
-`newSeqWith(5, newSeq[bool](3))` creates five **independent** inner
-sequences, not five references to the same one.
-
-- **Parameters:**
-  - `len: int` — the required length of the resulting sequence.
-  - `init: untyped` — an expression evaluated separately for each
-    element; its result type sets the element type of the `seq`.
-
-**Examples:**
-
-```nim
-# A "2D" sequence: five independent bool sequences of length 3.
-var grid = newSeqWith(5, newSeq[bool](3))
-assert len(grid) == 5
-assert len(grid[0]) == 3
-assert grid[4][2] == false
-
-# Independence: mutating one nested seq doesn't affect the others.
-grid[0][0] = true
-assert grid[1][0] == false
-
-# Practical scenario: a sequence of random numbers (rand(1.0) is
-# evaluated afresh each time, so the values differ).
-import std/random
-var randomSeq = newSeqWith(20, rand(1.0))
-assert len(randomSeq) == 20
-```
-
----
-
-### 4. `cycle`
-
-```nim
-func cycle*[T](s: openArray[T], n: Natural): seq[T]
-```
-
-**What it does.** Returns a new sequence in which the whole content of
-`s` is repeated `n` times in a row. If `n == 0` (or `s` is empty), the
-result is an empty sequence.
-
-**Implementation notes.** The result is allocated up front in one shot —
-`newSeq[T](n * len(s))` — then filled by two nested loops: the outer
-loop repeats the "pass" `n` times, the inner loop copies the elements of
-`s` one after another with a running counter `o`, incremented via
-`unCheckedInc` (an overflow-check-free increment — a micro-optimization,
-since `o` is guaranteed not to exceed the result's size). Complexity is
-O(n × len(s)).
-
-- **Parameters:**
-  - `s: openArray[T]` — the source sequence pattern (not modified).
-  - `n: Natural` — how many times to repeat the content of `s`.
-
-**Examples:**
-
-```nim
-let
-  s = @[1, 2, 3]
-  total = cycle(s, 3)
-assert total == @[1, 2, 3, 1, 2, 3, 1, 2, 3]
-
-# Edge case: n = 0 — empty result regardless of s's content.
-assert cycle(s, 0) == newSeq[int]()
-
-# Practical scenario: a pattern for a texture or progress indicator.
-let pattern = cycle(@['.', '.', 'o'], 4)
-assert len(pattern) == 12
-```
-
----
-
-### 5. `concat`
+### `concat`
 
 ```nim
 func concat*[T](seqs: varargs[seq[T]]): seq[T]
 ```
 
-**What it does.** Takes any number of sequences of the same type and
-concatenates their elements into one new sequence — in the order the
-arguments were passed. The reverse operation is
-[`distribute`](#6-distribute), which splits one sequence into several.
+**What it does.** Joins several sequences of the same type into one new sequence. All elements of all arguments are copied in order into the resulting `seq`, preserving both the order of the arguments and the order of elements within each. Passing one empty sequence, or none at all, yields an empty `seq`.
 
-**Implementation notes.** First, a single pass over `seqs` computes the
-total length `L` of all input sequences, so the result can be allocated
-in one shot (`newSeq(result, L)`) — with no further reallocations while
-adding elements. A second pass then copies each sequence's elements in
-turn, using an unchecked counter `i` (`unCheckedInc`), since it's
-guaranteed not to exceed `L`.
+**Implementation notes.** Before copying, the function sums the lengths of all input sequences in a single pass (`inc(L, len(seqitm))`) and allocates memory for the result of the exact needed size once (`newSeq(result, L)`). This avoids the repeated reallocations that would occur with successive `add` calls: the complexity stays linear O(n) in the total number of elements, but with a single allocation instead of potentially O(log n) reallocations of a growing dynamic array.
 
 - **Parameters:**
-  - `seqs: varargs[seq[T]]` — any number of sequences of type `T`,
-    passed as separate arguments.
-
-**Examples:**
+  - `seqs: varargs[seq[T]]` — any number of sequences of the same type `T`, joined in the order listed.
 
 ```nim
 let
   s1 = @[1, 2, 3]
   s2 = @[4, 5]
-  s3 = @[6, 7]
+  s3: seq[int] = @[]
   total = concat(s1, s2, s3)
-assert total == @[1, 2, 3, 4, 5, 6, 7]
+echo total  # prints @[1, 2, 3, 4, 5]
 
-# Edge case: empty sequences in the argument list simply contribute
-# no elements.
-assert concat(s1, newSeq[int](), s3) == @[1, 2, 3, 6, 7]
-
-# Practical scenario: merging several pages of a paginated API result
-# into a single list.
-let
-  page1 = @["a", "b"]
-  page2 = @["c", "d", "e"]
-  allRecords = concat(page1, page2)
-assert len(allRecords) == 5
+let empty = concat[int]()  # edge case: no arguments
+echo empty  # prints @[]
 ```
 
 ---
 
-### 6. `distribute`
+### `cycle`
 
 ```nim
-func distribute*[T](s: seq[T], num: Positive, spread = true): seq[seq[T]]
+func cycle*[T](s: openArray[T], n: Natural): seq[T]
 ```
 
-**What it does.** Splits sequence `s` into `num` sub-sequences. If
-`num < 2`, the result is a single element, equal to the whole of `s`.
-If `s` is empty, the result is `num` empty sub-sequences. The `spread`
-parameter controls **how** the remainder of `len(s) div num` is
-distributed: `spread = true` (the default) spreads the remainder evenly
-across all sub-sequences (handy for distributing work across threads —
-every worker gets a nearly equal load); `spread = false` gives the
-entire remainder to the last sub-sequence, while the earlier ones get
-exactly `1 + len(s) div num` elements each.
-
-**Implementation notes.** The base step `stride = len(s) div num` and
-remainder `extra = len(s) mod num` are computed once. When `spread =
-false` (or there's no remainder), an "over-counting" algorithm is used:
-if there's a remainder, `stride` is bumped up by one in advance, and the
-upper bound of each chunk is taken as `min(len(s), first + stride)` — so
-the last chunk automatically ends up shorter if the total length runs
-out. When `spread = true`, an "under-counting" algorithm is used: the
-base `stride` is left as is, and the remainder `extra` is **spent** one
-element at a time on the first `extra` sub-sequences — hence the even
-distribution of the surplus.
+**What it does.** Returns a new sequence in which the contents of `s` are repeated whole `n` times in a row (all of `s` — then all of `s` again, `n` times). At `n = 0` the result is an empty `seq`. For an empty `s` and any `n`, the result is also empty.
 
 - **Parameters:**
-  - `s: seq[T]` — the source sequence (not modified).
-  - `num: Positive` — how many parts to split into; at `1`, the result
-    is `s` itself wrapped in an extra `seq`.
-  - `spread: bool` (default `true`) — spread the remainder evenly
-    (`true`) or give it all to the last part (`false`).
-
-**Examples:**
+  - `s: openArray[T]` — the immutable source sequence/array/string, repeated as a whole.
+  - `n: Natural` — number of repetitions (0 or more).
 
 ```nim
-let numbers = @[1, 2, 3, 4, 5, 6, 7]
-assert distribute(numbers, 3) == @[@[1, 2, 3], @[4, 5], @[6, 7]]
-assert distribute(numbers, 3, false) == @[@[1, 2, 3], @[4, 5, 6], @[7]]
+let s = @[1, 2, 3]
+echo cycle(s, 3)  # prints @[1, 2, 3, 1, 2, 3, 1, 2, 3]
+echo cycle(s, 0)  # edge case: prints @[]
 
-# Edge case: num greater than the length of s — some sub-sequences
-# end up empty.
-assert distribute(numbers, 6)[0] == @[1, 2]
-assert distribute(numbers, 6)[1] == @[3]
-
-# Practical scenario: distributing tasks across a thread pool —
-# every worker gets roughly equal load.
-let
-  tasks = toSeq(1..10)
-  perWorker = distribute(tasks, 4)
-assert len(perWorker) == 4
+let empty: seq[int] = @[]
+echo cycle(empty, 5)  # edge case: prints @[]
 ```
 
 ---
 
-### 7. `items` (over a closure iterator)
+### `repeat`
 
 ```nim
-iterator items*[T](xs: iterator: T): T
+proc repeat*[T](x: T, n: Natural): seq[T]
 ```
 
-**What it does.** A helper iterator that lets you walk a closure
-iterator (`iterator: T`) exactly like an ordinary container — wrapping
-`for x in xs(): yield x`. On its own it's rarely used directly; its
-practical value is that it opens up templates like `mapIt`, `filterIt`,
-`allIt`, and `anyIt` — which internally rely on `items(s)` — to closure
-iterators as well.
-
-**Implementation notes.** The implementation is a one-line pass: the
-iterator calls the passed closure iterator `xs()` and forwards
-(`yield`s) each of its values as its own. No additional data structures
-are created.
+**What it does.** Returns a new sequence made of `n` copies of the same value `x` (unlike `cycle`, which repeats an entire sequence, `repeat` repeats a single element). At `n = 0` — an empty `seq`.
 
 - **Parameters:**
-  - `xs: iterator: T` — a closure iterator (not an inline one) that
-    yields values of type `T`.
-
-**Examples:**
+  - `x: T` — the value to be duplicated.
+  - `n: Natural` — how many copies to produce (0 or more).
 
 ```nim
-# Wrapping a closure iterator so it can be used with filterIt.
-var counter = 0
-let iter = iterator (): int {.closure.} =
-  while counter < 5:
-    yield counter
-    inc(counter)
+echo repeat(5, 3)     # prints @[5, 5, 5]
+echo repeat("ok", 0)  # edge case: prints @[]
 
-var collected: seq[int]
-for x in items(iter):
-  add(collected, x)
-assert collected == @[0, 1, 2, 3, 4]
+# Practical scenario: a fixed-length separator string
+let separator = repeat('-', 20)
+echo len(separator)  # prints 20
 ```
 
 ---
 
-## II. Mapping
+### `newSeqWith`
 
-### 1. `map`
+```nim
+template newSeqWith*(len: int, init: untyped): untyped
+```
+
+**What it does.** Creates a new sequence of length `len`, where each element is initialized by a separate evaluation of the expression `init` — that is, `init` is evaluated afresh for *each* position. This is what distinguishes `newSeqWith` from `repeat`: if `init` is, say, `newSeq[bool](3)`, then each nested sequence is its own independent object, not n references to the same one. That's exactly why `newSeqWith` is the standard way to build a "2D" sequence (a seq of seqs).
+
+- **Parameters:**
+  - `len: int` — the required length of the resulting sequence.
+  - `init: untyped` — an expression evaluated afresh for each element (may use `rand`, constructors for nested `seq`s, and so on).
+
+```nim
+# Creates a seq of 5 bool seqs, each of length 3 — independent nested seqs
+var seq2D = newSeqWith(5, newSeq[bool](3))
+echo len(seq2D)       # prints 5
+echo len(seq2D[0])    # prints 3
+
+seq2D[0][0] = true
+echo seq2D[1][0]     # prints false — independent initialization, not a shared reference
+```
+
+---
+
+### `toSeq`
+
+```nim
+template toSeq*(iter: untyped): untyped
+```
+
+**What it does.** Turns an arbitrary iterable object (a range `1..5`, a `set`, an iterator, an `openArray`) into a concrete `seq`. This is the most common first step in functional-style chains: a range on its own does not support `mapIt`/`filterIt`, while a `seq` obtained via `toSeq` does.
+
+**Implementation notes.** `toSeq` is not a single implementation but a dispatcher of three branches, chosen via `when compiles(...)` right at compile time, with no involvement from the calling code: the first branch handles ordinary typed containers (ranges, arrays, sets) — if the argument has a known `len`, the result is allocated at the exact needed size in a single O(n) pass; the second branch handles named closure iterators, whose `len` is not known in advance, so accumulation happens through incremental `add`, which may require several reallocations; the third branch is a fallback path for untyped inline iterators such as `toSeq(myInlineIterator(3))` that don't fit the first two.
+
+- **Parameters:**
+  - `iter: untyped` — any expression that can be iterated in a `for` loop (a range, a set, an `openArray`, a named or inline iterator).
+
+```nim
+let
+  myRange = 1..5
+  mySet: set[int8] = {5'i8, 3, 1}
+echo toSeq(myRange)  # prints @[1, 2, 3, 4, 5]
+echo toSeq(mySet)    # prints @[1, 3, 5] — a set yields sorted order
+
+# Edge case: an empty range yields an empty sequence
+echo toSeq(1..0)  # prints @[]
+
+# Practical scenario: an inline iterator turned into a seq for a further mapIt/filterIt chain
+iterator evens(n: int): int =
+  for i in 0..<n:
+    if i mod 2 == 0:
+      yield i
+echo toSeq(evens(10))  # prints @[0, 2, 4, 6, 8]
+```
+
+---
+
+## Transforming elements
+
+### `map`
 
 ```nim
 proc map*[T, S](s: openArray[T], op: proc (x: T): S {.closure.}): seq[S]
 ```
 
-**What it does.** Returns a new sequence the same size as `s`, where
-each element is the result of applying `op` to the corresponding element
-of `s`. The source container is not modified. Since `op` can return a
-type `S` different from `T`, `map` also serves as a way to convert a
-container's element type (e.g. `seq[int]` into `seq[string]`).
-
-**Implementation notes.** The result is allocated at the right size up
-front (`newSeq(result, len(s))`), then a simple index loop calls
-`op(s[i])` and writes the result into `result[i]`. No intermediate
-accumulation via `add` is needed — a single O(n) pass.
+**What it does.** Returns a new sequence of the same length as `s`, where each element is the result of applying `op` to the corresponding element of the source sequence. The source `s` is not changed. The result type `S` may differ from the source element type `T` — this is the standard way to convert one type to another element-wise.
 
 - **Parameters:**
-  - `s: openArray[T]` — the source container (not modified).
-  - `op: proc (x: T): S {.closure.}` — the per-element transform
-    function; it may change the type (`T` → `S`).
-
-**Examples:**
+  - `s: openArray[T]` — the immutable source sequence.
+  - `op: proc (x: T): S` — the function converting one element of type `T` into an element of type `S`.
 
 ```nim
 let
   a = @[1, 2, 3, 4]
   b = map(a, proc(x: int): string = $x)
-assert b == @["1", "2", "3", "4"]
-
-# Edge case: an empty container — an empty result.
-let empty: seq[int] = @[]
-assert map(empty, proc(x: int): int = x * 2) == newSeq[int]()
-
-# Practical scenario: converting a list of Celsius temperatures to
-# Fahrenheit.
-let
-  celsius = @[0.0, 20.0, 37.0, 100.0]
-  fahrenheit = map(celsius, proc(c: float): float = c * 9.0 / 5.0 + 32.0)
-assert fahrenheit[2] == 98.6
+echo b  # prints @["1", "2", "3", "4"]
 ```
 
 ---
 
-### 2. `mapIt`
+### `mapIt`
 
 ```nim
 template mapIt*(s: typed, op: untyped): untyped
 ```
 
-**What it does.** A syntactically lighter version of `map`: instead of
-a separately declared `proc`, it uses an expression `op` where the
-current element is available through the injected `it` variable.
-Behavior (a result the same size as `s`, with a possibly transformed
-type) is identical to `map`.
-
-**Implementation notes.** The result type (`OutType`) is inferred by the
-compiler by substituting a dummy `it` into the `op` expression. If the
-resulting type is *not* a `proc` (the common case), the template avoids
-creating closures inside the loop: if `s` has `len`, the result is
-pre-allocated (`newSeq[OutType](len(s2))`) and filled by index;
-otherwise it's accumulated via `add`. A special case is when `op`
-itself constructs a `proc` (e.g. `mapIt([1, 2], (x: int) => it + x)`):
-here `mapIt` avoids a manual loop and instead builds a helper function
-`f` that closes over `it`, delegating the work to the ordinary `map` —
-otherwise, every iteration would produce procs identical in code but
-different in captured `it`, which is both less efficient and less
-predictable.
+**What it does.** The same thing as `map`, but instead of an explicit `proc(x: T): S = ...`, it uses an implicitly injected `it` variable referring to the current element. This removes the need to write out the converter function's signature every time. Like `map`, it does not change the source sequence.
 
 - **Parameters:**
-  - `s: typed` — the source container, supporting `items`.
-  - `op: untyped` — an expression using the `it` variable, defining the
-    per-element transform.
-
-**Examples:**
+  - `s: typed` — the source sequence/array/string.
+  - `op: untyped` — an expression using the `it` variable (the current element).
 
 ```nim
 let
   nums = @[1, 2, 3, 4]
   strings = mapIt(nums, $(4 * it))
-assert strings == @["4", "8", "12", "16"]
-
-# Edge case: a single element.
-assert mapIt(@[7], it * it) == @[49]
-
-# Practical scenario: mapIt returning a closure — mapIt delegates to
-# map instead of producing a fresh proc on every iteration.
-import std/sugar
-let adders = mapIt([1, 2], (x: int) => it + x)
-assert adders[0](10) == 11
-assert adders[1](10) == 12
+echo strings  # prints @["4", "8", "12", "16"]
 ```
 
 ---
 
-### 3. `apply` (three variants)
+### `apply` (variant A)
 
 ```nim
 proc apply*[T](s: var openArray[T], op: proc (x: var T) {.closure.})
-proc apply*[T](s: var openArray[T], op: proc (x: T): T {.closure.})
-proc apply*[T](s: openArray[T], op: proc (x: T) {.closure.})
 ```
 
-**What it does.** The in-place counterpart of `map`. The first variant
-passes each element to `op` **by reference** (`var T`) — `op` mutates it
-directly. The second variant takes an `op` that receives a `T` and
-returns a new `T` — the result is written back to the same slot. The
-third variant is for an `op` with no return value and no `var`
-mutation; `s` itself here can even be non-mutable from the caller's
-perspective (`openArray[T]` without `var`), since `apply` in this case
-is used purely for `op`'s side effects (e.g. accumulating into an
-outer variable).
-
-**Implementation notes.** All three variants are a simple index loop
-over `0 ..< len(s)`, differing only in what happens to `op`'s result:
-the first calls `op(s[i])` without capturing a return value (mutation
-already happened via `var T`); the second does `s[i] = op(s[i])`; the
-third simply calls `op(s[i])`, ignoring both mutation and return value.
+**What it does.** Changes `s` in place: for each element it calls `op`, passing the element by `var` reference, so `op` mutates the element directly inside its body (returning nothing). Requires `s` to be declared as `var`.
 
 - **Parameters:**
-  - `s: var openArray[T]` (variants 1–2) or `openArray[T]` (variant 3)
-    — the container mutated in place (except in variant 3).
-  - `op` — the function whose shape determines which of the three
-    variants the compiler picks.
-
-**Examples:**
+  - `s: var openArray[T]` — the mutable sequence whose elements will be replaced in place.
+  - `op: proc (x: var T)` — a procedure that mutates the passed element `x` directly.
 
 ```nim
-# Variant 1: op mutates the element via var.
-var a1 = @["1", "2", "3", "4"]
-apply(a1, proc(x: var string) = x &= "42")
-assert a1 == @["142", "242", "342", "442"]
-
-# Variant 2: op takes and returns T.
-var a2 = @["1", "2", "3", "4"]
-apply(a2, proc(x: string): string = x & "42")
-assert a2 == @["142", "242", "342", "442"]
-
-# Variant 3: op returns nothing — used purely for its side effect.
-var message: string
-apply([0, 1, 2, 3, 4], proc(item: int) = addInt(message, item))
-assert message == "01234"
+var a = @["1", "2", "3", "4"]
+apply(a, proc(x: var string) = x &= "42")
+echo a  # prints @["142", "242", "342", "442"]
 ```
 
 ---
 
-### 4. `applyIt`
+### `apply` (variant B)
+
+```nim
+proc apply*[T](s: var openArray[T], op: proc (x: T): T {.closure.})
+```
+
+**What it does.** Also changes `s` in place, but unlike variant A, `op` does not mutate the argument directly — instead it returns a new value of the same type `T`, which replaces the element `s[i]`. Requires the input and output of `op` to be of the same type, otherwise the assignment `s[i] = op(s[i])` won't compile.
+
+- **Parameters:**
+  - `s: var openArray[T]` — the mutable sequence.
+  - `op: proc (x: T): T` — a function taking an element and returning its new value of the same type.
+
+```nim
+var a = @["1", "2", "3", "4"]
+apply(a, proc(x: string): string = x & "42")
+echo a  # prints @["142", "242", "342", "442"]
+```
+
+---
+
+### `apply` (variant C)
+
+```nim
+proc apply*[T](s: openArray[T], op: proc (x: T) {.closure.})
+```
+
+**What it does.** Unlike variants A and B, this mutates and returns nothing at all — this overload exists purely for the side effect of `op` (for example, accumulating into an outer variable, writing to a file, logging). That's exactly why `s` here doesn't require `var`.
+
+- **Parameters:**
+  - `s: openArray[T]` — the immutable sequence being walked by `op`.
+  - `op: proc (x: T)` — a procedure with no return value, called for its side effect.
+
+```nim
+var message: string
+apply([0, 1, 2, 3, 4], proc(item: int) = addInt(message, item))
+echo message  # prints "01234"
+```
+
+---
+
+### `applyIt`
 
 ```nim
 template applyIt*(varSeq, op: untyped)
 ```
 
-**What it does.** A convenience wrapper around the mutating variant of
-`apply` — no need to write a `proc`. The `op` expression uses the `it`
-variable and must return a value of the same type as the container's
-elements; that value overwrites the element.
-
-**Implementation notes.** The loop runs over indices `low(varSeq) ..
-high(varSeq)`; on each iteration `it` is declared as a `let` holding the
-current element's value, `op` is evaluated, and the result is written
-back into `varSeq[i]`. Since `it` is constant while `op` is evaluated,
-the expression cannot rely on a "previously mutated" value — only on
-the element's original value.
+**What it does.** A convenient wrapper around the mutating `apply` (variant B) that, like `mapIt`, uses an implicit `it` variable instead of an explicit function. The expression `op` must return a value of the same type as the elements of `varSeq`, since the result of `op` is assigned back into `varSeq[i]`.
 
 - **Parameters:**
-  - `varSeq: untyped` — a mutable container (`var seq`/`var array`).
-  - `op: untyped` — an expression using `it`, returning the new
-    element value.
-
-**Examples:**
+  - `varSeq: untyped` — the mutable sequence (must be `var`).
+  - `op: untyped` — an expression with the `it` variable, returning the element's new value.
 
 ```nim
 var nums = @[1, 2, 3, 4]
 applyIt(nums, it * 3)
-assert nums[0] + nums[3] == 15
-
-# Practical scenario: upper-casing a list of strings in place.
-import std/strutils
-var words = @["hello", "world"]
-applyIt(words, toUpperAscii(it))
-assert words == @["HELLO", "WORLD"]
+echo nums  # prints @[3, 6, 9, 12]
 ```
 
 ---
 
-### 5. `mapLiterals`
+### `mapLiterals`
 
 ```nim
 macro mapLiterals*(constructor, op: untyped; nested = true): untyped
 ```
 
-**What it does.** Applies `op` not to a sequence's elements at
-runtime, but to every atomic **literal** (`3`, `"abc"`, `1.2`) found in
-the passed-in AST constructor — at compile time. Useful when you need to
-convert every literal inside an array/tuple to a different type at
-once, without manually spelling out each call. With `nested = true`
-(the default), `op` is applied to literals at any nesting depth
-(tuples inside tuples); with `nested = false`, only first-level
-literals are touched, and nested structures are left alone.
-
-**Implementation notes.** The macro recursively walks the passed-in
-AST (`mapLitsImpl`): if the current node is a literal of the relevant
-kind (`nnkLiterals` by default), it's wrapped in a call to `op`;
-otherwise the node is copied (`copyNimNode`) and its children are
-processed recursively — but only if `nested = true`, or the child is
-itself a literal. Because this happens at compile time, `op` here can
-be not only a `proc`, but also an arbitrary type converter such as
-`int` or `$`.
+**What it does.** Applies a function/operator `op` not to the elements of a sequence at run time, but to every "atomic" literal (a number, a string) directly in the AST of a constructor (an array, a tuple) at compile time. Useful for converting the types of literals inside nested constructs without manually wrapping every number.
 
 - **Parameters:**
-  - `constructor: untyped` — an AST expression: an array, a tuple, or a
-    nested combination of these with literals.
-  - `op: untyped` — a function or type converter applied to every
-    matching literal.
-  - `nested: bool` (default `true`) — whether to apply `op` at every
-    nesting level or only at the first one.
-
-**Examples:**
+  - `constructor: untyped` — an AST constructor (for example, an array or tuple literal) inside which atomic literals are searched for.
+  - `op: untyped` — a function or operator applied to every literal found (for example, `int`, `` `$` ``).
+  - `nested: bool` — if `true` (the default), literals are replaced at every level of nesting; if `false` — only at the top level.
 
 ```nim
 let x = mapLiterals([0.1, 1.2, 2.3, 3.4], int)
-assert x is array[4, int]
-assert x == [int(0.1), int(1.2), int(2.3), int(3.4)]
+echo x  # prints [0, 1, 2, 3] — literals converted to int
 
-# nested = true (the default) — literals are replaced at any depth.
 let a = mapLiterals((1.2, (2.3, 3.4), 4.8), int)
-assert a == (1, (2, 3), 4)
-
-# nested = false — only first-level literals.
 let b = mapLiterals((1.2, (2.3, 3.4), 4.8), int, nested = false)
-assert b == (1, (2.3, 3.4), 4)
+echo a  # prints (1, (2, 3), 4) — literals replaced at every level
+echo b  # prints (1, (2.3, 3.4), 4) — only the top-level literal replaced
 ```
 
 ---
 
-## III. Filtering
+## Filtering
 
-### 1. `filter` (proc)
+### `filter` (proc)
 
 ```nim
 proc filter*[T](s: openArray[T], pred: proc(x: T): bool {.closure.}): seq[T]
 ```
 
-**What it does.** Returns a new sequence containing only the elements
-of `s` for which the predicate `pred` returned `true`. Order is
-preserved, and the source container is not modified. The in-place
-counterpart is [`keepIf`](#4-keepif).
-
-**Implementation notes.** The result starts empty (`newSeq[T]()`), and
-an index loop simply `add`s matching elements. Unlike `map`, the exact
-result size can't be pre-allocated — the number of matching elements is
-unknown up front — so dynamic appending is used (the `seq` may
-reallocate internally).
+**What it does.** Returns a new sequence containing only the elements of `s` for which `pred` returned `true`. Order is preserved, the source `s` is not changed. If no element qualifies, the result is an empty `seq`.
 
 - **Parameters:**
-  - `s: openArray[T]` — the source container (not modified).
-  - `pred: proc(x: T): bool {.closure.}` — the predicate: an element
-    stays in the result if the predicate returns `true`.
-
-**Examples:**
+  - `s: openArray[T]` — the immutable source sequence.
+  - `pred: proc(x: T): bool` — the predicate deciding whether to keep an element.
 
 ```nim
 let
   colors = @["red", "yellow", "black"]
-  f1 = filter(colors, proc(x: string): bool = len(x) < 6)
-  f2 = filter(colors, proc(x: string): bool = contains(x, 'y'))
-assert f1 == @["red", "black"]
-assert f2 == @["yellow"]
-
-# Edge case: no element matches — an empty result.
-assert filter(colors, proc(x: string): bool = len(x) > 100) == newSeq[string]()
-
-# Practical scenario: picking log lines by severity.
-import std/strutils
-let
-  log = @["INFO: started", "ERROR: disk failure", "INFO: ready", "ERROR: timeout"]
-  errors = filter(log, proc(line: string): bool = strutils.startsWith(line, "ERROR"))
-assert len(errors) == 2
+  short = filter(colors, proc(x: string): bool = len(x) < 6)
+  withY = filter(colors, proc(x: string): bool = contains(x, 'y'))
+echo short  # prints @["red", "black"]
+echo withY  # prints @["yellow"]
 ```
 
 ---
 
-### 2. `filter` (iterator)
+### `filter` (iterator)
 
 ```nim
 iterator filter*[T](s: openArray[T], pred: proc(x: T): bool {.closure.}): T
 ```
 
-**What it does.** An iterator version of the same selection: instead of
-building a whole new sequence, elements passing `pred` are yielded one
-at a time as traversal proceeds. Useful when the result is consumed
-right away in a loop and materializing an intermediate `seq` would be
-wasteful.
-
-**Implementation notes.** An index loop over `0 ..< len(s)` checks
-`pred(s[i])` and does `yield s[i]` when the predicate holds — without
-allocating any extra memory for the result inside the iterator itself
-(only the consuming code spends memory, if it chooses to accumulate
-values).
+**What it does.** Functionally the same as the `filter` proc — it walks `s` and yields, one at a time, only the elements for which `pred` is true — but it does not build an intermediate `seq`; instead it generates values "lazily", one at a time, inside a `for` loop. The mutating/non-mutating distinction doesn't apply here — this is a choice between "materialize the whole seq at once" and "yield one element per loop iteration".
 
 - **Parameters:**
-  - `s: openArray[T]` — the source container (not modified).
-  - `pred: proc(x: T): bool {.closure.}` — the selection predicate.
-
-**Examples:**
+  - `s: openArray[T]` — the immutable source sequence.
+  - `pred: proc(x: T): bool` — the selection predicate.
 
 ```nim
 let numbers = @[1, 4, 5, 8, 9, 7, 4]
 var evens = newSeq[int]()
 for n in filter(numbers, proc (x: int): bool = x mod 2 == 0):
   add(evens, n)
-assert evens == @[4, 8, 4]
-
-# Practical scenario: processing on the fly without an intermediate
-# seq — summing the even numbers without collecting them separately.
-var evenSum = 0
-for n in filter(numbers, proc (x: int): bool = x mod 2 == 0):
-  inc(evenSum, n)
-assert evenSum == 16
+echo evens  # prints @[4, 8, 4]
 ```
 
 ---
 
-### 3. `filterIt`
+### `filterIt`
 
 ```nim
 template filterIt*(s, pred: untyped): untyped
 ```
 
-**What it does.** The "expression" variant of `filter`: `pred` is an
-expression using `it` rather than a `proc`. Returns a new sequence;
-order and semantics match `filter`.
-
-**Implementation notes.** The result's element type is taken from
-`typeof(s[0])`, so `filterIt` requires that `s` support indexing at
-least logically (via `items`, from which the first element is drawn for
-type inference). The loop `for it {.inject.} in items(s)` checks `pred`
-on each pass and `add`s matching `it` values to the result; at the end,
-`result` is returned via `move` — avoiding an unnecessary copy of the
-accumulated sequence when leaving the template.
+**What it does.** A version of `filter` with an implicit `it` variable instead of an explicit predicate function. Returns a new sequence, the source `s` is not changed.
 
 - **Parameters:**
-  - `s: untyped` — the source container.
-  - `pred: untyped` — a predicate expression using `it`.
-
-**Examples:**
+  - `s: untyped` — the source sequence/array/string.
+  - `pred: untyped` — a boolean expression using the `it` variable.
 
 ```nim
 let
   temperatures = @[-272.15, -2.0, 24.5, 44.31, 99.9, -113.44]
   acceptable = filterIt(temperatures, it < 50 and it > -10)
-  notAcceptable = filterIt(temperatures, it > 50 or it < -10)
-assert acceptable == @[-2.0, 24.5, 44.31]
-assert notAcceptable == @[-272.15, 99.9, -113.44]
+echo acceptable  # prints @[-2.0, 24.5, 44.31]
 
-# Practical scenario: stripping vowels from a string (the module works
-# on strings as openArray[char] too).
-import std/strutils
-let
-  vowels = @['a', 'e', 'i', 'o', 'u']
-  foo = "sequtils is an awesome module"
-assert join(filterIt(foo, it notin vowels)) == "sqtls s n wsm mdl"
+let empty: seq[int] = @[]
+echo filterIt(empty, it > 0)  # edge case: prints @[]
 ```
 
 ---
 
-### 4. `keepIf`
+### `keepIf`
 
 ```nim
 proc keepIf*[T](s: var seq[T], pred: proc(x: T): bool {.closure.})
 ```
 
-**What it does.** The in-place counterpart of `filter`: keeps in `s`
-only the elements that pass `pred`, dropping the rest; `s` must be
-`var`.
+**What it does.** The mutating counterpart of `filter`: instead of creating a new sequence, it rebuilds `s` in place, keeping only the elements that satisfy `pred`, and truncating the length to the new element count.
 
-**Implementation notes.** Instead of building a new container, this
-uses the "two pointers" idiom: `pos` is the write position for the next
-matching element, `i` is the read position. Scanning `s` left to right,
-on a predicate match the element is "compacted" into position `pos` (if
-it differs from `i` — otherwise no rewrite is needed); where
-destructors are supported, `move` is used, otherwise `shallowCopy` (an
-older, non-deep-copying mechanism). Finally, `setLen(s, pos)` trims the
-tail — the old elements past `pos` are no longer needed. This is the
-classic "in-place partitioning" idiom: O(n) time, no extra memory for
-the result.
+**Implementation notes.** Uses the classic "two pointers moving over one array" pattern: `pos` is where to write the next matching element, `i` is what's currently being read. When an element matches and `pos != i`, it is moved back to position `pos` (via `move` when `gcDestructors` is enabled, otherwise `shallowCopy`); after the pass, `setLen(s, pos)` is called, dropping the tail. Complexity is O(n), with no extra memory for a copy of the sequence.
 
 - **Parameters:**
-  - `s: var seq[T]` — the sequence, mutated in place.
-  - `pred: proc(x: T): bool {.closure.}` — the selection predicate.
-
-**Examples:**
+  - `s: var seq[T]` — the mutable sequence (rebuilt in place).
+  - `pred: proc(x: T): bool` — the selection predicate.
 
 ```nim
 var floats = @[13.0, 12.5, 5.8, 2.0, 6.1, 9.9, 10.1]
 keepIf(floats, proc(x: float): bool = x > 10)
-assert floats == @[13.0, 12.5, 10.1]
-
-# Edge case: no element matches — the sequence becomes empty, but not nil.
-var numbers = @[1, 2, 3]
-keepIf(numbers, proc(x: int): bool = x > 100)
-assert numbers == newSeq[int]()
-
-# Practical scenario: dropping stale records without allocating a new seq.
-var tasks = @[("A", true), ("B", false), ("C", true)]
-keepIf(tasks, proc(x: (string, bool)): bool = x[1])
-assert tasks == @[("A", true), ("C", true)]
+echo floats  # prints @[13.0, 12.5, 10.1]
 ```
 
 ---
 
-### 5. `keepItIf`
+### `keepItIf`
 
 ```nim
 template keepItIf*(varSeq: seq, pred: untyped)
 ```
 
-**What it does.** The "expression" variant of `keepIf`: `pred` is an
-expression using `it` rather than a `proc`. Semantics (in-place
-mutation, order preserved) match `keepIf`.
-
-**Implementation notes.** The implementation is the same "two pointers"
-trick as `keepIf`, except `it` is declared as a `let` for each position
-`i` before evaluating `pred`, letting you write `pred` as an ordinary
-boolean expression instead of a separate `proc`.
+**What it does.** A version of `keepIf` with an implicit `it` variable. Changes `varSeq` in place using the same "two pointers" approach as `keepIf`.
 
 - **Parameters:**
-  - `varSeq: seq` — the mutable sequence.
-  - `pred: untyped` — a predicate expression using `it`.
-
-**Examples:**
+  - `varSeq: seq` — the mutable sequence (must be `var`).
+  - `pred: untyped` — a boolean expression using the `it` variable.
 
 ```nim
 var candidates = @["foo", "bar", "baz", "foobar"]
 keepItIf(candidates, len(it) == 3 and it[0] == 'b')
-assert candidates == @["bar", "baz"]
-
-# Practical scenario: cleaning short/service tokens out of a list.
-var tokens = @["a", "hello", "x", "world"]
-keepItIf(tokens, len(it) > 1)
-assert tokens == @["hello", "world"]
+echo candidates  # prints @["bar", "baz"]
 ```
 
 ---
 
-## IV. Searching, Predicate Checks, and Aggregate Metrics
+## Searching and condition checks
 
-### 1. `findIt`
+### `findIt`
 
 ```nim
 template findIt*(s, predicate: untyped): int
 ```
 
-**What it does.** Returns the index of the **first** element of `s` for
-which `predicate` holds, or `-1` if there's no such element.
-
-**Implementation notes.** A simple linear scan, `for it {.inject.} in
-items(s)`, with a counter `i`: as soon as `predicate` holds, `i` is
-saved into `res` and the loop breaks — no further elements are checked
-(short-circuiting). If the loop finishes without a match, `res` stays
-`-1`.
+**What it does.** Returns the index of the first element of `s` satisfying `predicate`, or `-1` if no such element exists. Unlike `find` (from another module), the predicate here is an expression using the `it` variable, not a value to compare against.
 
 - **Parameters:**
-  - `s: untyped` — a container supporting `items`.
-  - `predicate: untyped` — an expression using `it`.
-
-**Examples:**
+  - `s: untyped` — the source sequence/array/string.
+  - `predicate: untyped` — a boolean expression using the `it` variable.
 
 ```nim
-assert findIt(@[3, 2, 1], it == 2) == 1
-
-# Edge case: no match — result is -1.
-assert findIt(@[3, 2, 1], it == 99) == -1
-
-# Practical scenario: index of the first negative reading in a log.
-let readings = @[1.5, 2.0, -0.5, 3.3]
-assert findIt(readings, it < 0) == 2
+echo findIt(@[3, 2, 1], it == 2)   # prints 1
+echo findIt(@[3, 2, 1], it == 99)  # edge case, not found: prints -1
 ```
 
 ---
 
-### 2. `any` / `anyIt`
-
-```nim
-proc any*[T](s: openArray[T], pred: proc(x: T): bool {.closure.}): bool
-template anyIt*(s, pred: untyped): bool
-```
-
-**What it does.** Checks whether `s` has at least one element
-satisfying the predicate. `any` takes `pred` as a `proc`, `anyIt` — as
-an expression using `it`.
-
-**Implementation notes.** `any` is a direct linear scan with an early
-exit: as soon as `pred(i)` holds, it immediately `return`s `true`; if
-the loop finishes, it returns `false`. `anyIt` is implemented in terms
-of the already-described `findIt`: its result is simply `findIt(s,
-pred) != -1`, reusing the existing short-circuiting search instead of
-duplicating the loop.
-
-- **Parameters:**
-  - `s: openArray[T]` (`any`) / `untyped` (`anyIt`) — the container.
-  - `pred` / `pred: untyped` — the check predicate.
-
-**Examples:**
-
-```nim
-let numbers = @[1, 4, 5, 8, 9, 7, 4]
-assert any(numbers, proc (x: int): bool = x > 8) == true
-assert any(numbers, proc (x: int): bool = x > 9) == false
-
-assert anyIt(numbers, it > 8) == true
-assert anyIt(numbers, it > 9) == false
-
-# Practical scenario: is there at least one overdue order in the list.
-let orders = @[(id: 1, overdue: false), (id: 2, overdue: true)]
-assert anyIt(orders, it.overdue) == true
-```
-
----
-
-### 3. `all` / `allIt`
+### `all` / `allIt`
 
 ```nim
 proc all*[T](s: openArray[T], pred: proc(x: T): bool {.closure.}): bool
 template allIt*(s, pred: untyped): bool
 ```
 
-**What it does.** Checks whether **all** elements of `s` satisfy the
-predicate. For an empty container, both return `true` ("the statement
-holds for all elements of the empty set" — a standard logical
-convention).
-
-**Implementation notes.** `all` is a linear scan with an early exit: as
-soon as an element is found for which `pred` is false, it immediately
-`return`s `false`; if the whole container is scanned without such an
-element, it returns `true`. `allIt` is implemented directly (unlike
-`anyIt`, not in terms of `findIt`): `result` is initialized to `true`,
-and as soon as `pred` is false for the current `it`, `result` becomes
-`false` and the loop breaks.
+**What it does.** Checks that *every single* element of `s` satisfies the predicate. On an empty sequence it returns `true` (a degenerate case: the "for all" condition is vacuously true when there are no elements). `allIt` is the same algorithm but with an implicit `it` variable instead of an explicit function.
 
 - **Parameters:**
-  - `s: openArray[T]` (`all`) / `untyped` (`allIt`) — the container.
-  - `pred` / `pred: untyped` — the check predicate.
-
-**Examples:**
+  - `s: openArray[T]` (for `all`) / `s: untyped` (for `allIt`) — the sequence being checked.
+  - `pred` — the predicate (an explicit function for `all`, an expression with `it` for `allIt`).
 
 ```nim
 let numbers = @[1, 4, 5, 8, 9, 7, 4]
-assert all(numbers, proc (x: int): bool = x < 10) == true
-assert all(numbers, proc (x: int): bool = x < 9) == false
+echo all(numbers, proc (x: int): bool = x < 10)  # prints true
+echo allIt(numbers, it < 9)                       # prints false
 
-assert allIt(numbers, it < 10) == true
-assert allIt(numbers, it < 9) == false
-
-# Edge case: an empty container — the predicate is vacuously true.
 let empty: seq[int] = @[]
-assert allIt(empty, it > 1000) == true
+echo allIt(empty, it > 1000)  # edge case: prints true
 ```
 
 ---
 
-### 4. `count` / `countIt`
+### `any` / `anyIt`
 
 ```nim
-func count*[T](s: openArray[T], x: T): int
+proc any*[T](s: openArray[T], pred: proc(x: T): bool {.closure.}): bool
+template anyIt*(s, pred: untyped): bool
+```
+
+**What it does.** Checks whether *at least one* element of `s` satisfies the predicate. On an empty sequence it's always `false`. `anyIt` is implemented via `findIt` — as soon as a matching index is found (not `-1`), the result is `true`.
+
+- **Parameters:**
+  - `s` — the sequence being checked.
+  - `pred` — the predicate (an explicit function for `any`, an expression with `it` for `anyIt`).
+
+```nim
+let numbers = @[1, 4, 5, 8, 9, 7, 4]
+echo any(numbers, proc (x: int): bool = x > 8)  # prints true
+echo anyIt(numbers, it > 9)                      # prints false
+
+let empty: seq[int] = @[]
+echo anyIt(empty, true)  # edge case: prints false
+```
+
+---
+
+### `countIt`
+
+```nim
 template countIt*(s, pred: untyped): int
 ```
 
-**What it does.** `count` counts how many times a specific value `x`
-occurs in `s` (compared via `==`). `countIt` is the more general
-variant: it counts how many elements satisfy an arbitrary predicate
-expression `pred`.
-
-**Implementation notes.** Both are simple linear scans accumulating a
-counter: `count` compares each element to `x` (`unCheckedInc result` on
-a match), `countIt` evaluates `pred` for each `it` and increments
-`result` when it holds. The full scan always runs (no early exit),
-since **all** matches need to be counted, not just the first.
+**What it does.** Counts how many elements of `s` satisfy the predicate `pred` (an expression with the `it` variable). Unlike `count`, the comparison here is an arbitrary condition, not equality against a specific value.
 
 - **Parameters:**
-  - `s: openArray[T]` (`count`) / `untyped` (`countIt`, supporting
-    `items`) — the container.
-  - `x: T` — the value to compare exactly (`count` only).
-  - `pred: untyped` — a predicate expression using `it` (`countIt`
-    only).
+  - `s: untyped` — the sequence being checked, or any iterable object.
+  - `pred: untyped` — a boolean expression using the `it` variable.
 
-**Examples:**
+```nim
+let numbers = @[-3, -2, -1, 0, 1, 2, 3, 4, 5, 6]
+echo countIt(numbers, it < 0)  # prints 3
+```
+
+---
+
+### `count`
+
+```nim
+func count*[T](s: openArray[T], x: T): int
+```
+
+**What it does.** Counts how many times the specific value `x` occurs in `s` (comparison via `==`). This is a special case of `countIt` for comparing against a fixed value, but it's implemented separately and works without a predicate expression.
+
+- **Parameters:**
+  - `s: openArray[T]` — the sequence/array/string being checked.
+  - `x: T` — the value being searched for.
 
 ```nim
 let
   a = @[1, 2, 2, 3, 2, 4, 2]
   b = "abracadabra"
-assert count(a, 2) == 4
-assert count(a, 99) == 0
-assert count(b, 'r') == 2
-
-let numbers = @[-3, -2, -1, 0, 1, 2, 3, 4, 5, 6]
-assert countIt(numbers, it < 0) == 3
-
-# Practical scenario: countIt works with arbitrary iterators too.
-iterator iota(n: int): int =
-  for i in 0..<n: yield i
-assert countIt(iota(10), it < 2) == 2
+echo count(a, 2)   # prints 4
+echo count(a, 99)  # edge case, not found: prints 0
+echo count(b, 'r') # prints 2
 ```
 
 ---
 
-### 5. `min` / `max`
+## Aggregation and folding
+
+### `foldl` (without an initial value)
+
+```nim
+template foldl*(sequence, operation: untyped): untyped
+```
+
+**What it does.** Folds the sequence left to right into a single value, using the variables `a` (accumulator) and `b` (current element) in `operation`. Requires at least one element — on an empty sequence there will be an assertion failure in a debug build (undefined behavior in a release build). For a single-element sequence, returns that element without applying `operation`.
+
+**Implementation notes.** `a` and `b` are injected on every iteration via `{.inject.}`, which lets `operation` be written as an ordinary expression (`a + b`) rather than as a function with explicit parameters. For non-associative operations, the parenthesization is "left-associative": for `1, 2, 3` this is `((1 - 2) - 3)`.
+
+- **Parameters:**
+  - `sequence: untyped` — a non-empty sequence.
+  - `operation: untyped` — an expression using the variables `a` (accumulated result) and `b` (the next element).
+
+```nim
+let numbers = @[5, 9, 11]
+echo foldl(numbers, a + b)  # prints 25, since ((5+9)+11)
+echo foldl(numbers, a - b)  # prints -15, since ((5-9)-11)
+```
+
+---
+
+### `foldl` (with an initial value)
+
+```nim
+template foldl*(sequence, operation, first): untyped
+```
+
+**What it does.** The same as `foldl` without an initial value, but with an explicit starting value `first`, which becomes the first `a`. This allows folding a sequence into a type different from its element type (for example, numbers → string), and also lets an empty sequence be handled correctly (the result is simply `first`).
+
+- **Parameters:**
+  - `sequence: untyped` — a sequence (may be empty).
+  - `operation: untyped` — an expression using `a` (accumulator) and `b` (current element).
+  - `first` — the accumulator's starting value, which determines the result type.
+
+```nim
+let
+  numbers = @[0, 8, 1, 5]
+  digits = foldl(numbers, a & chr(b + ord('0')), "")
+echo digits  # prints "0815" — folding numbers into a string
+```
+
+---
+
+### `foldr`
+
+```nim
+template foldr*(sequence, operation: untyped): untyped
+```
+
+**What it does.** Folds the sequence right to left (unlike `foldl`). Requires at least one element. For a single element, returns it without applying `operation`. For non-associative operations, the parentheses are right-associative: for `1, 2, 3` — `(1 - (2 - 3))`.
+
+- **Parameters:**
+  - `sequence: untyped` — a non-empty sequence.
+  - `operation: untyped` — an expression using `a` and `b`, where at each step `b` is the already-accumulated (right-hand) result and `a` is the next element to its left.
+
+```nim
+let numbers = @[5, 9, 11]
+echo foldr(numbers, a - b)  # prints 7, since (5-(9-(11)))
+```
+
+---
+
+### `min` / `max` (with a comparator)
 
 ```nim
 proc min*[T](x: openArray[T], cmp: proc(a, b: T): int): T
 proc max*[T](x: openArray[T], cmp: proc(a, b: T): int): T
 ```
 
-**What it does.** Return the minimum (or maximum) element of `x`
-according to a user-supplied comparator `cmp` — unlike `system.min`/
-`system.max`, comparison is fully defined by the caller, so this works
-for comparing by an arbitrary criterion (string length, a struct field,
-etc.), not just via the built-in `<`.
-
-**Implementation notes.** Both start with `result = x[0]` and scan the
-remaining elements (`1..high(x)`), updating `result` whenever `cmp`
-says the current element is "better." The convention is Nim's standard
-comparator convention: `cmp(a, b) < 0` means "`a` is less than `b`."
-Both require a non-empty `x` — on an empty container, accessing `x[0]`
-raises `IndexDefect`.
+**What it does.** Returns the minimum/maximum element of `x`, determining order via an arbitrary comparison function `cmp` (as in `sort`: a negative value means `a < b`, a positive value means `a > b`). Useful when there's no natural `<` operator for type `T`, or when a non-standard comparison criterion is needed (for example, string length rather than alphabetical order).
 
 - **Parameters:**
-  - `x: openArray[T]` — a non-empty container.
-  - `cmp: proc(a, b: T): int` — a comparator in Nim's standard form
-    (negative/zero/positive).
-
-**Examples:**
+  - `x: openArray[T]` — a non-empty sequence.
+  - `cmp: proc(a, b: T): int` — a function comparing two elements.
 
 ```nim
-proc byLen(a, b: string): int = len(a) - len(b)
-
-let words = @["hello", "i", "world"]
-assert min(words, byLen) == "i"
-assert max(words, byLen) == "hello"
-
-# Practical scenario: the minimal element by a custom tuple field.
-let ranges = @[2..4, 1..3, 6..10]
-assert min(ranges, proc(a, b: Slice[int]): int = a.a - b.a) == 1..3
+let words = @["foo", "bar", "hello"]
+echo min(words, proc (a, b: string): int = len(a) - len(b))  # prints "foo"
+echo max(words, proc (a, b: string): int = len(a) - len(b))  # prints "hello"
 ```
 
 ---
 
-### 6. `minIndex` / `maxIndex`
+### `minIndex` / `maxIndex`
 
 ```nim
 func minIndex*[T](s: openArray[T]): int
@@ -1059,723 +675,435 @@ func maxIndex*[T](s: openArray[T]): int
 func maxIndex*[T](s: openArray[T], cmp: proc(a, b: T): int): int
 ```
 
-**What it does.** Return not the minimum/maximum element itself, but
-its **index** within `s`. The variant without `cmp` requires `T` to
-support the `<` operator; the variant with `cmp` works the same way as
-`min`/`max` above — comparison is fully user-defined.
-
-**Implementation notes.** All four variants follow the same pattern:
-`result` is initialized to index `0`, then a loop over `1..high(s)`
-updates `result` whenever the current element turns out to be "better"
-than the current candidate (via `<` or via `cmp`). The only difference
-between `minIndex` and `maxIndex` is the direction of the comparison
-(`s[i] < s[result]` versus `s[i] > s[result]`, or the corresponding
-swap of `cmp`'s arguments).
+**What it does.** Returns not the minimum/maximum element itself, but its *index* in `s`. The variant without `cmp` requires `T` to have a `<` operator; the variant with `cmp` works like `min`/`max` with a comparator. When there are several equal minimums/maximums, the index of the first one encountered is returned.
 
 - **Parameters:**
-  - `s: openArray[T]` — a non-empty container.
-  - `cmp: proc(a, b: T): int` (optional) — a custom comparator.
-
-**Examples:**
+  - `s: openArray[T]` — a non-empty sequence.
+  - `cmp: proc(a, b: T): int` — an optional comparison function.
 
 ```nim
-let
-  a = @[1, 2, 3, 4]
-  b = @[6, 5, 4, 3]
-  c = [2, -7, 8, -5]
-  d = "ziggy"
-assert minIndex(a) == 0
-assert minIndex(b) == 3
-assert minIndex(c) == 1
-assert minIndex(d) == 2
+let c = [2, -7, 8, -5]
+echo minIndex(c)  # prints 1 (value -7)
+echo maxIndex(c)  # prints 2 (value 8)
 
-assert maxIndex(a) == 3
-assert maxIndex(b) == 0
-assert maxIndex(c) == 2
-assert maxIndex(d) == 0
-
-# Practical scenario: the index of the shortest/longest word.
 let s1 = @["foo", "bar", "hello"]
-assert minIndex(s1, proc (a, b: string): int = len(a) - len(b)) == 0
-assert maxIndex(s1, proc (a, b: string): int = len(a) - len(b)) == 2
+echo minIndex(s1, proc (a, b: string): int = len(a) - len(b))  # prints 0
 ```
 
 ---
 
-### 7. `minmax`
+### `minmax`
 
 ```nim
 func minmax*[T](x: openArray[T]): (T, T)
 func minmax*[T](x: openArray[T], cmp: proc(a, b: T): int): (T, T)
 ```
 
-**What it does.** Returns a (minimum, maximum) pair in a single pass
-over `x` — where separate calls to `min` and `max` would require two
-passes. The variant without `cmp` requires `<` for `T`; the variant
-with `cmp` uses a custom comparator.
+**What it does.** Returns a pair (minimum, maximum) in one go, doing a single pass over `x` instead of two separate calls to `min`/`max`. The variant without `cmp` requires `T` to have a `<` operator; the variant with `cmp` uses a custom comparison.
 
-**Implementation notes.** Both `l` (minimum) and `h` (maximum) start at
-`x[0]`, then a single loop over the remaining elements updates either
-`l` or `h` depending on the comparison result (`elif`, meaning each
-element is checked against only one of the two criteria per iteration,
-not both). This yields O(n) with a single pass instead of O(2n) for
-separate `min`+`max` calls.
+**Implementation notes.** A single pass maintains two invariants at once: the current minimum and the current maximum; each element is compared at most twice (`elif`, not two independent `if`s), which is twice as efficient as calling `min(x)` and `max(x)` sequentially.
 
 - **Parameters:**
-  - `x: openArray[T]` — a non-empty container.
-  - `cmp: proc(a, b: T): int` (optional) — a custom comparator.
-
-**Examples:**
+  - `x: openArray[T]` — a non-empty sequence.
+  - `cmp: proc(a, b: T): int` — an optional comparison function.
 
 ```nim
-let numbers = @[5, 1, 9, -3, 7]
-assert minmax(numbers) == (-3, 9)
-
-# Practical scenario: the range of string lengths in a single pass.
-let words = @["a", "hello", "sun", "internationalization"]
-let (shortest, longest) = minmax(words, proc(a, b: string): int = len(a) - len(b))
-assert shortest == "a"
-assert longest == "internationalization"
+let a = [2, -7, 8, -5]
+echo minmax(a)  # prints (-7, 8)
 ```
 
 ---
 
-## V. Folding
+## In-place sequence modification
 
-### 1. `foldl` (without a starting value)
+### `addUnique`
 
 ```nim
-template foldl*(sequence, operation: untyped): untyped
+func addUnique*[T](s: var seq[T], x: sink T)
 ```
 
-**What it does.** Folds `sequence` left to right into a single value,
-using `operation` — an expression with variables `a` (the accumulated
-result) and `b` (the current element). The sequence must be non-empty:
-the first element becomes the accumulator's starting value, and the
-fold applies to the rest. For non-associative operations (subtraction,
-say), the parenthesization is: `(((s[0]) op s[1]) op s[2]) op ...`.
-
-**Implementation notes.** `result` is initialized to the first element
-(`s[0]`), then a loop `for i in 1..<len(s)` declares `a` and `b` as
-injected `let`s at each step (`a` is the current `result`, `b` is the
-next element), evaluates `operation`, and writes the result back into
-`result`. In debug builds non-emptiness is checked via `assert`, but in
-release builds (without checks) there's no such guard — the caller must
-guarantee non-emptiness.
+**What it does.** Adds `x` to the end of `s`, but only if such an element isn't already there (checked via `==` against every existing element). Calling it again with an already-present value has no effect.
 
 - **Parameters:**
-  - `sequence: untyped` — a non-empty container.
-  - `operation: untyped` — an expression using variables `a` (the
-    accumulator) and `b` (the current element).
-
-**Examples:**
+  - `s: var seq[T]` — the mutable sequence the element is added to.
+  - `x: sink T` — the candidate value to add.
 
 ```nim
-let
-  numbers = @[5, 9, 11]
-  addition = foldl(numbers, a + b)
-  subtraction = foldl(numbers, a - b)
-assert addition == 25, "Addition: (((5)+9)+11)"
-assert subtraction == -15, "Subtraction: (((5)-9)-11)"
-
-# Practical scenario: concatenating a list of strings.
-let words = @["nim", "is", "cool"]
-assert foldl(words, a & b) == "nimiscool"
-
-# Edge case: a single element is returned without applying operation.
-assert foldl(@[42], a + b) == 42
+var a = @[1, 2, 3]
+addUnique(a, 4)
+addUnique(a, 4)  # adding the same value again — no effect
+echo a  # prints @[1, 2, 3, 4]
 ```
 
 ---
 
-### 2. `foldl` (with a starting value)
+### `deduplicate`
 
 ```nim
-template foldl*(sequence, operation, first): untyped
+func deduplicate*[T](s: openArray[T], isSorted: bool = false): seq[T]
 ```
 
-**What it does.** A variant of `foldl` with an explicit starting value
-`first`. The key difference from the no-start version: the result type
-comes from the type of `first`, not from the sequence's element type —
-so this variant lets you fold a sequence into a **different** type
-(e.g. folding a `seq[int]` into a `string`). It also works on an empty
-sequence — it simply returns `first` unchanged.
+**What it does.** Returns a new sequence without repeated elements, preserving the order of first appearance. Does not change `s`. The `isSorted = true` flag enables a faster algorithm, applicable only if `s` is already sorted (in which case it's enough to compare neighboring elements rather than search through the whole accumulated result so far).
 
-**Implementation notes.** `result` is initialized to the value of
-`first` (with an explicit `typeof(first)`), then the loop `for x in
-items(sequence)` runs `operation` at each step with `a = result` and `b
-= x`. Unlike the no-start version, there's no special handling of the
-"first element" — the loop simply walks every element of `sequence`
-from the very start.
+**Implementation notes.** At `isSorted = false`, `result.contains(itm)` is called for every element, giving quadratic O(n²) complexity in the worst case (for each of the n elements — a check against everything accumulated so far). At `isSorted = true`, the algorithm compares an element only against the previous one (`prev`), giving linear O(n) complexity — but the result will be incorrect if the input isn't actually sorted, since duplicates separated by other values won't be detected.
 
 - **Parameters:**
-  - `sequence: untyped` — a container (may be empty).
-  - `operation: untyped` — an expression using variables `a` (the
-    accumulator) and `b` (the current element).
-  - `first: untyped` — the accumulator's starting value; sets the
-    result type.
-
-**Examples:**
+  - `s: openArray[T]` — the source sequence.
+  - `isSorted: bool` — enables the fast algorithm for pre-sorted data (defaults to `false`).
 
 ```nim
-let
-  numbers = @[0, 8, 1, 5]
-  digits = foldl(numbers, a & chr(b + ord('0')), "")
-assert digits == "0815"
+let dup1 = @[1, 1, 3, 4, 2, 2, 8, 1, 4]
+echo deduplicate(dup1)  # prints @[1, 3, 4, 2, 8]
 
-# Edge case: an empty sequence — the result equals first.
-let empty: seq[int] = @[]
-assert foldl(empty, a + b, 100) == 100
-
-# Practical scenario: summing string lengths (an int accumulator over
-# a seq[string]).
-let words = @["one", "two", "six"]
-assert foldl(words, a + len(b), 0) == 9
+let dup2 = @["a", "a", "c", "d", "d"]
+echo deduplicate(dup2, isSorted = true)  # prints @["a", "c", "d"]
 ```
 
 ---
 
-### 3. `foldr`
+### `delete`
 
 ```nim
-template foldr*(sequence, operation: untyped): untyped
+func delete*[T](s: var seq[T]; slice: Slice[int])
 ```
 
-**What it does.** Folds `sequence` right to left — unlike `foldl`,
-where the accumulator builds up from the left, here the fold starts at
-the last element and moves toward the first. For non-associative
-operations, parentheses nest in the opposite order:
-`(s[0] op (s[1] op (... op (s[n-1]))))`. Requires a non-empty sequence
-(checked via `assert` in debug builds); with a single element, it's
-returned without applying `operation`.
+**What it does.** Deletes from `s` the elements falling within the range `slice` (inclusive on both ends), shifting the remaining tail left. If `slice`'s bounds fall outside `s`, an `IndexDefect` exception is raised. An empty slice (for example, `1..<1`) is not an error but a degenerate case with no deletion.
 
-**Implementation notes.** The sequence is materialized into `s` (the
-source comments note a possible inefficiency here), then `result` is
-initialized to the last element (`s[n - 1]`), and the loop runs **in
-reverse** (`countdown(n - 2, 0)`): at each step `a` is the next (more
-leftward) element `s[i]`, `b` is the already-accumulated `result` —
-meaning `a` and `b` in `foldr` are reversed in meaning compared to
-`foldl`.
+**Implementation notes.** Elements after the deleted range are shifted left in place (`move` under `gcDestructors`, otherwise `shallowCopy`), after which `s` is truncated to the new length via `setLen`. The operation's cost is linear O(n) in the number of shifted elements — that is, from the deletion position to the end of the sequence, not from the size of the deleted range itself.
 
 - **Parameters:**
-  - `sequence: untyped` — a non-empty container.
-  - `operation: untyped` — an expression using variables `a` (the more
-    leftward element) and `b` (the accumulated result to the right).
-
-**Examples:**
+  - `s: var seq[T]` — the mutable sequence.
+  - `slice: Slice[int]` — the inclusive index range to delete.
 
 ```nim
-let
-  numbers = @[5, 9, 11]
-  addition = foldr(numbers, a + b)
-  subtraction = foldr(numbers, a - b)
-assert addition == 25, "Addition: (5+(9+(11)))"
-assert subtraction == 7, "Subtraction: (5-(9-(11)))"
+var a = @[10, 11, 12, 13, 14]
+doAssertRaises(IndexDefect): delete(a, 4..5)  # error case: out of bounds
+echo a  # prints @[10, 11, 12, 13, 14] — unchanged
 
-# Practical scenario: right-to-left concatenation gives the same result
-# as left-to-right for an associative operation.
-let words = @["nim", "is", "cool"]
-assert foldr(words, a & b) == "nimiscool"
-
-# Edge case: a single element is returned unchanged.
-assert foldr(@[42], a - b) == 42
+delete(a, 4..4)
+echo a  # prints @[10, 11, 12, 13]
+delete(a, 1..2)
+echo a  # prints @[10, 13]
+delete(a, 1..<1)  # edge case: empty slice
+echo a  # prints @[10, 13] — unchanged
 ```
 
 ---
 
-## VI. Working with Pairs of Sequences
+### `insert`
 
-### 1. `zip`
+```nim
+func insert*[T](dest: var seq[T], src: openArray[T], pos = 0)
+```
+
+**What it does.** Inserts all elements of `src` into `dest` starting at position `pos`, shifting `dest`'s existing elements from `pos` onward further to the right. Changes `dest` in place, does not touch `src`. `pos` defaults to `0` (insert at the start).
+
+**Implementation notes.** First `dest` is expanded to its final length (`setLen`), then the existing tail is shifted right *from the end*, so as not to overwrite data not yet copied, and only then are `src`'s elements written into the freed window. This order (right-to-left for the shift, left-to-right for the insertion) is the standard trick for avoiding overwriting data that's still needed for reading.
+
+- **Parameters:**
+  - `dest: var seq[T]` — the mutable destination sequence.
+  - `src: openArray[T]` — the elements to insert.
+  - `pos: int` — the insertion position (defaults to 0).
+
+```nim
+var dest = @[1, 1, 1, 1, 1, 1, 1, 1]
+let src = @[2, 2, 2, 2, 2, 2]
+insert(dest, src, 3)
+echo dest  # prints @[1, 1, 1, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1]
+
+# Edge case: pos omitted — inserts at the start
+var d2 = @[3, 4]
+insert(d2, @[1, 2])
+echo d2  # prints @[1, 2, 3, 4]
+
+# Practical scenario: inserting a block of new tracks into the middle of a playlist
+var playlist = @["track1", "track2", "track5"]
+insert(playlist, @["track3", "track4"], 2)
+echo playlist  # prints @["track1", "track2", "track3", "track4", "track5"]
+```
+
+---
+
+## Combining and splitting sequences
+
+### `zip`
 
 ```nim
 proc zip*[S, T](s1: openArray[S], s2: openArray[T]): seq[(S, T)]
 ```
 
-**What it does.** Builds a sequence of tuples, pairing up the elements
-of `s1` and `s2` by index: the `i`-th element of the result is
-`(s1[i], s2[i])`. If the input containers differ in length, the extra
-elements of the longer one are ignored — the result's length is
-`min(len(s1), len(s2))`. The two containers can have different element
-types (`S` and `T`).
-
-**Implementation notes.** `zip` is implemented via a private template
-`zipImpl`, which substitutes the returned tuple's type at compile time
-(a named tuple with fields `a`/`b` for older Nim versions, an unnamed
-`(S, T)` for modern ones) — this is how the library preserves backward
-compatibility without duplicating the logic. The implementation itself
-is straightforward: `m = min(len(s1), len(s2))`, the result is allocated
-up front for `m` elements, and a loop over `0 ..< m` collects the
-pairs.
+**What it does.** Returns a sequence of tuples `(s1[i], s2[i])` for each `i`. If the sequences differ in length, the extra elements of the longer one are dropped — the result's length equals the smaller of the two.
 
 - **Parameters:**
-  - `s1: openArray[S]` — the first container.
-  - `s2: openArray[T]` — the second container (may have a different
-    element type).
-
-**Examples:**
+  - `s1: openArray[S]` — the first sequence.
+  - `s2: openArray[T]` — the second sequence (may be of a different type).
 
 ```nim
 let
   short = @[1, 2, 3]
   long = @[6, 5, 4, 3, 2, 1]
   words = @["one", "two", "three"]
-  zip1 = zip(short, long)
-  zip2 = zip(short, words)
-assert zip1 == @[(1, 6), (2, 5), (3, 4)]
-assert zip2 == @[(1, "one"), (2, "two"), (3, "three")]
-assert zip1[2][0] == 3
-assert zip2[1][1] == "two"
-
-# Edge case: differing lengths — the longer container's tail is
-# dropped.
-assert len(zip(short, long)) == 3
-
-# Practical scenario: pairing names and scores together for a report.
-let
-  names = @["Ann", "Bob", "Vera"]
-  scores = @[91, 88, 95]
-  paired = zip(names, scores)
-assert paired[1] == ("Bob", 88)
+echo zip(short, long)   # prints @[(1, 6), (2, 5), (3, 4)] — the extra tail of long is dropped
+echo zip(short, words)  # prints @[(1, "one"), (2, "two"), (3, "three")]
 ```
 
 ---
 
-### 2. `unzip`
+### `unzip`
 
 ```nim
 proc unzip*[S, T](s: openArray[(S, T)]): (seq[S], seq[T])
 ```
 
-**What it does.** The reverse of `zip`: takes a sequence of 2-element
-tuples and splits it into a pair of separate sequences — one made of
-the first fields of the tuples, the other of the second fields. For any
-`s1`, `s2`, `unzip(zip(s1, s2)) == (s1, s2)` holds (accounting for
-truncation at the shorter length, as with `zip`).
-
-**Implementation notes.** Both output sequences are allocated up front
-at the exact size (`newSeq[S](len(s))`, `newSeq[T](len(s))`), then a
-single pass over `s` splits `s[i][0]` into the first, `s[i][1]` into
-the second. O(n) complexity, no intermediate structures.
+**What it does.** The reverse operation to `zip`: splits a sequence of two-element tuples into a pair of separate sequences — all the first components into one, all the second components into the other.
 
 - **Parameters:**
-  - `s: openArray[(S, T)]` — a sequence of pairs (not modified).
-
-**Examples:**
+  - `s: openArray[(S, T)]` — a sequence of pairs.
 
 ```nim
-let
-  zipped = @[(1, 'a'), (2, 'b'), (3, 'c')]
-  unzipped1 = @[1, 2, 3]
-  unzipped2 = @['a', 'b', 'c']
-assert unzip(zipped) == (unzipped1, unzipped2)
-assert unzip(zip(unzipped1, unzipped2)) == (unzipped1, unzipped2)
-
-# Practical scenario: splitting a list of (key, value) pairs into two
-# parallel lists for separate processing.
-let settings = @[("host", "localhost"), ("port", "8080")]
-let (keys, values) = unzip(settings)
-assert keys == @["host", "port"]
-assert values == @["localhost", "8080"]
+let zipped = @[(1, 'a'), (2, 'b'), (3, 'c')]
+echo unzip(zipped)  # prints (@[1, 2, 3], @['a', 'b', 'c'])
 ```
 
 ---
 
-## VII. In-Place Composition Changes
-
-### 1. `addUnique`
+### `distribute`
 
 ```nim
-func addUnique*[T](s: var seq[T], x: sink T)
+func distribute*[T](s: seq[T], num: Positive, spread = true): seq[seq[T]]
 ```
 
-**What it does.** Appends `x` to the end of `s`, but only if that value
-isn't already present (checked via `==`). If the element is already
-there, the call does nothing.
+**What it does.** Splits `s` into `num` nested sub-sequences. This is partly the reverse operation to `concat` (for some inputs). If `s` is empty, the result is `num` empty sub-sequences. If `num < 2`, the result is one sub-sequence equal to the whole of `s`.
 
-**Implementation notes.** First, a linear scan `for i in 0..high(s)`
-checks whether `x` is already present in `s`; on a match, it
-immediately `return`s without appending. If no match is found, the
-element is added via `add`, using `ensureMove(x)` wherever it's
-declared (`when declared(ensureMove)`) — this lets `x` be moved into
-the sequence instead of copied, since the parameter is declared `sink
-T` (ownership may be transferred by the caller). The duplicate check is
-O(n), so repeated calls to `addUnique` on a large `s` add up to
-quadratic total complexity.
+**Implementation notes.** The `spread` flag determines how the remainder of dividing `len(s)` by `num` is distributed. At `spread = true`, the remainder is evenly "spread" across all sub-sequences (the first few get one extra element each) — handy, for example, for evenly handing out work to a thread pool. At `spread = false`, the entire remainder goes to the first sub-sequence, while the rest are filled strictly evenly.
 
 - **Parameters:**
-  - `s: var seq[T]` — the sequence, mutated in place.
-  - `x: sink T` — the value to add; the parameter may be moved into
-    `s` instead of copied.
-
-**Examples:**
+  - `s: seq[T]` — the source sequence.
+  - `num: Positive` — how many parts to split into (≥ 1).
+  - `spread: bool` — whether to evenly distribute the remainder (`true`, the default) or hand it entirely to the first part (`false`).
 
 ```nim
-var a = @[1, 2, 3]
-addUnique(a, 4)
-addUnique(a, 4)
-assert a == @[1, 2, 3, 4]
-
-# Edge case: adding an already-present element leaves order and
-# contents unchanged — no duplicate is created.
-addUnique(a, 2)
-assert a == @[1, 2, 3, 4]
-
-# Practical scenario: building a set of unique tags from an input
-# stream.
-var tags: seq[string] = @[]
-for tag in @["python", "nim", "python", "rust"]:
-  addUnique(tags, tag)
-assert tags == @["python", "nim", "rust"]
+let numbers = @[1, 2, 3, 4, 5, 6, 7]
+echo distribute(numbers, 3)         # prints @[@[1, 2, 3], @[4, 5], @[6, 7]]
+echo distribute(numbers, 3, false)  # prints @[@[1, 2, 3], @[4, 5, 6], @[7]]
 ```
 
 ---
 
-### 2. `deduplicate`
+## Iterators for functional style
+
+### `items` (for a closure iterator)
 
 ```nim
-func deduplicate*[T](s: openArray[T], isSorted: bool = false): seq[T]
+iterator items*[T](xs: iterator: T): T
 ```
 
-**What it does.** Returns a new sequence with no repeated elements,
-preserving the order of each value's first appearance. The `isSorted`
-parameter is a performance hint: if `s` is known to be sorted, a faster
-algorithm can be used, comparing only adjacent elements.
-
-**Implementation notes.** With `isSorted = true` (the fast path), it's
-enough to compare each element to the previous one (`prev`) — since the
-sequence is sorted, all occurrences of a given value are adjacent, so
-"differs from the immediately preceding element" is equivalent to "has
-been seen before." This gives O(n). With `isSorted = false` (the
-default), each element is checked via `contains` against the already
-accumulated result — O(n) per insertion, i.e. O(n²) total in the worst
-case, but it doesn't require pre-sorted data and doesn't reorder
-elements.
+**What it does.** Lets you iterate, via an ordinary `for`, over values yielded by a closure iterator (`iterator: T`, rather than an ordinary `for`-compatible object). On its own this might not seem particularly useful, but it's exactly this `items` overload that makes it possible to apply `mapIt`, `filterIt`, `allIt`, `anyIt`, and similar templates directly to closure iterators, not only to `seq`/`array`/`string`.
 
 - **Parameters:**
-  - `s: openArray[T]` — the source container (not modified).
-  - `isSorted: bool` (default `false`) — turns on the fast algorithm
-    for already-sorted data.
-
-**Examples:**
+  - `xs: iterator: T` — a closure iterator yielding values of type `T`.
 
 ```nim
-let
-  dup1 = @[1, 1, 3, 4, 2, 2, 8, 1, 4]
-  dup2 = @["a", "a", "c", "d", "d"]
-  unique1 = deduplicate(dup1)
-  unique2 = deduplicate(dup2, isSorted = true)
-assert unique1 == @[1, 3, 4, 2, 8]
-assert unique2 == @["a", "c", "d"]
+iterator countUp3(n: int): int {.closure.} =
+  var i = 0
+  while i < n:
+    yield i
+    inc i
 
-# Edge case: an empty container — an empty result, no errors.
-assert deduplicate(newSeq[int]()) == newSeq[int]()
-
-# Practical scenario: unique IP addresses from a request log,
-# preserving the order of first contact.
-let log = @["10.0.0.1", "10.0.0.2", "10.0.0.1", "10.0.0.3"]
-assert deduplicate(log) == @["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+var acc: seq[int] = @[]
+for x in items(countUp3(4)):
+  add(acc, x)
+echo acc  # prints @[0, 1, 2, 3]
 ```
 
 ---
 
-### 3. `delete`
+## Practical recipes
+
+### Top-N leaders by value
+
+Find the top three players by score, without sorting the whole list — it's enough to repeatedly pull out the maximum and remove it.
 
 ```nim
-func delete*[T](s: var seq[T]; slice: Slice[int])
-```
+type Player = tuple[name: string, score: int]
 
-**What it does.** Removes from `s` the elements whose indices fall
-within `slice` (inclusive on both ends), shifting the remaining
-elements left. If `slice` extends past `s`'s bounds, `IndexDefect` is
-raised (when `boundChecks` are enabled). An empty slice (`i..<i`) is a
-valid, no-op call.
+var players = @[
+  ("Anna", 42), ("Bob", 87), ("Carl", 15),
+  ("Dina", 87), ("Egor", 63)
+]
 
-The deprecated variant `delete(s, first, last: Natural)` (with two
-separate parameters instead of a `Slice[int]`) is marked
-`{.deprecated.}` in favor of the slice form — new code should use
-`delete(s, first..last)`.
+proc topN(s: seq[Player], n: int): seq[Player] =
+  var pool = s
+  for i in 0 ..< min(n, len(pool)):
+    let idx = maxIndex(pool, proc(a, b: Player): int = a.score - b.score)
+    add(result, pool[idx])
+    delete(pool, idx..idx)
 
-**Implementation notes.** The removal happens without allocating new
-memory: the elements after the removed range (`s[slice.b + 1 .. ^1]`)
-are shifted into the freed slot via `move` (where destructors are
-supported) or `shallowCopy` (without them), after which `setLen` trims
-the sequence's tail. Compilation for JS is handled separately — instead
-of a manual shift loop, it uses the native array method `splice`, which
-is more efficient in that environment. Complexity is O(n) in the worst
-case (the entire tail after the removed range shifts).
-
-- **Parameters:**
-  - `s: var seq[T]` — the sequence, mutated in place.
-  - `slice: Slice[int]` — the inclusive index range to remove.
-
-**Examples:**
-
-```nim
-var a = @[10, 11, 12, 13, 14]
-doAssertRaises(IndexDefect): delete(a, 4..5)
-assert a == @[10, 11, 12, 13, 14]
-
-delete(a, 4..4)
-assert a == @[10, 11, 12, 13]
-delete(a, 1..2)
-assert a == @[10, 13]
-
-# Edge case: an empty slice doesn't change the sequence.
-delete(a, 1..<1)
-assert a == @[10, 13]
-
-# Practical scenario: removing a range of stale entries from a buffer
-# while preserving order of the remaining ones.
-var buffer = @["a", "b", "c", "d", "e"]
-delete(buffer, 1..2)
-assert buffer == @["a", "d", "e"]
+let leaders = topN(players, 3)
+echo leaders  # prints the top 3 by descending score: Bob, Dina, Egor
 ```
 
 ---
 
-### 4. `insert`
+### Removing duplicates while preserving order
+
+Collect unique email addresses from a request log, preserving the order of first appearance.
 
 ```nim
-func insert*[T](dest: var seq[T], src: openArray[T], pos = 0)
-```
+let log = @[
+  "a@example.com", "b@example.com", "a@example.com",
+  "c@example.com", "b@example.com"
+]
 
-**What it does.** Inserts the elements of `src` into `dest`, starting
-at position `pos`, shifting the existing elements `dest[pos..]` right.
-`dest` and `src` must have the same element type; `dest` is mutated in
-place, `src` is not.
-
-**Implementation notes.** First, `dest` is grown to its final length
-(`setLen(dest, i + 1)`, where `i` is the new last index), then the
-existing tail `dest[pos..]` is shifted **right to left** (a `while j
->= pos` loop, decreasing indices) — this order is required to avoid
-overwriting elements that haven't been copied yet when the read and
-write ranges overlap. After shifting the tail, the freed range starting
-at `pos` is filled in order with the elements of `src`. Complexity is
-O(len(dest) + len(src)), with no extra container.
-
-- **Parameters:**
-  - `dest: var seq[T]` — the sequence, mutated in place (receiving the
-    insertion).
-  - `src: openArray[T]` — the elements to insert (not modified).
-  - `pos: int` (default `0`) — the position at which `src`'s elements
-    are inserted.
-
-**Examples:**
-
-```nim
-var dest = @[1, 1, 1, 1, 1, 1, 1, 1]
-let
-  src = @[2, 2, 2, 2, 2, 2]
-  outcome = @[1, 1, 1, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1]
-insert(dest, src, 3)
-assert dest == outcome
-
-# Edge case: inserting at the start (pos defaults to 0).
-var d2 = @[3, 4]
-insert(d2, @[1, 2])
-assert d2 == @[1, 2, 3, 4]
-
-# Practical scenario: inserting a block of new items in the middle of
-# a playlist buffer.
-var playlist = @["track1", "track2", "track5"]
-insert(playlist, @["track3", "track4"], 2)
-assert playlist == @["track1", "track2", "track3", "track4", "track5"]
+let uniqueEmails = deduplicate(log)
+echo uniqueEmails  # prints @["a@example.com", "b@example.com", "c@example.com"]
 ```
 
 ---
 
-## VIII. Practical Recipes
+### Round-robin distribution of tasks across workers
 
-### 1. Top-N Leaders by Criterion
-
-A combination of a working copy and repeated `maxIndex` + `delete` —
-useful when a full sort would be wasteful and n is much smaller than
-the input.
+Hand out a set of tasks to a fixed number of workers as evenly as possible (ignoring task weight), for further parallel processing.
 
 ```nim
-proc topN(scores: openArray[int], n: Positive): seq[int] =
-  ## Returns the n largest values without an external sort — suitable
-  ## when n << len(scores).
-  var
-    working = toSeq(scores)
-    leaders = newSeq[int]()
+let tasks = toSeq(1..10)
+let perWorker = distribute(tasks, 3)  # 3 workers
 
-  for i in 0 ..< min(n, len(working)):
-    let idx = maxIndex(working)
-    add(leaders, working[idx])
-    delete(working, idx..idx)
-
-  leaders
-
-let scores = @[42, 17, 88, 3, 56, 91, 10]
-assert topN(scores, 3) == @[91, 88, 56]
+for i, chunk in perWorker:
+  echo "worker " & $i & " gets: " & $chunk
+# worker 0 gets: @[1, 2, 3, 4]
+# worker 1 gets: @[5, 6, 7]
+# worker 2 gets: @[8, 9, 10]
 ```
 
 ---
 
-### 2. Deduplication Preserving First Occurrence
+### Word frequency analysis
 
-`deduplicate` already solves this directly, but sometimes you also need
-to count how many times each unique element occurred — that's where
-the combination `deduplicate` + `count` comes in.
+Count how many words longer than three characters appear in a sentence, and print just those, converted to upper case.
 
 ```nim
-proc frequencies(s: openArray[string]): seq[(string, int)] =
-  let uniqueValues = deduplicate(s)
-  result = newSeq[(string, int)](len(uniqueValues))
-  for i, value in uniqueValues:
-    result[i] = (value, count(s, value))
+import std/strutils
 
-let words = @["nim", "go", "nim", "rust", "go", "nim"]
-assert frequencies(words) == @[("nim", 3), ("go", 2), ("rust", 1)]
+let sentence = "the quick brown fox jumps over the lazy dog"
+let words = split(sentence, " ")
+
+let longWords = filterIt(words, len(it) > 3)
+let upperLongWords = mapIt(longWords, toUpperAscii(it))
+let longWordCount = countIt(words, len(it) > 3)
+
+echo upperLongWords  # prints @["QUICK", "BROWN", "JUMPS", "OVER", "LAZY"]
+echo longWordCount   # prints 5
 ```
 
 ---
 
-### 3. Round-Robin Task Distribution Across Workers
+### Combining two parallel lists into a report
 
-A combination of `toSeq`, `distribute`, and `mapIt` — a typical
-pattern when preparing work for a thread pool: turn a range into a
-sequence, split it into nearly equal chunks, and wrap each chunk in a
-convenient structure.
-
-```nim
-type WorkPacket = object
-  workerIndex: int
-  items: seq[int]
-
-proc buildPackets(total: int, workers: Positive): seq[WorkPacket] =
-  let tasks = toSeq(0 ..< total)
-  let chunks = distribute(tasks, workers)
-  result = newSeq[WorkPacket](len(chunks))
-  for i, chunk in chunks:
-    result[i] = WorkPacket(workerIndex: i, items: chunk)
-
-let packets = buildPackets(10, 3)
-assert len(packets) == 3
-assert packets[0].items == @[0, 1, 2, 3]
-```
-
----
-
-### 4. Merging Two Parallel Lists into a Report
-
-A combination of `zip` + `filterIt` + `mapIt`: pair up two parallel
-lists, filter by a condition, and format the result as report text.
+The `zip` + `filterIt` + `mapIt` combo: pair up two parallel lists, select the ones that match a condition, and turn them into ready-made report text.
 
 ```nim
 import std/strformat
 
-proc failureReport(names: openArray[string],
-                    results: openArray[bool]): seq[string] =
+proc failureReport(names: openArray[string], results: openArray[bool]): seq[string] =
   let paired = zip(names, results)
   let failures = filterIt(paired, not it[1])
   mapIt(failures, fmt"{it[0]}: failed")
 
 let
   names = @["test_a", "test_b", "test_c"]
-  outcomes = @[true, false, false]
-assert failureReport(names, outcomes) == @["test_b: failed", "test_c: failed"]
+  results = @[true, false, false]
+echo failureReport(names, results)  # prints @["test_b: failed", "test_c: failed"]
 ```
 
 ---
 
-### 5. Rolling Statistics over a Numeric Log
+### Rolling statistics over a numeric log
 
-A combination of `minmax`, `foldl`, and `allIt` — a quick way to check
-the range and "health" of a numeric stream with a minimum of passes.
+The `minmax`, `foldl`, and `allIt` combo: minimum, maximum, sum, and an "all values within the allowed range" check, in the fewest passes possible.
 
 ```nim
 type LogStats = object
   minimum, maximum, total: float
   withinRange: bool
 
-proc gatherStats(values: openArray[float],
-                  lower, upper: float): LogStats =
-  let (minVal, maxVal) = minmax(values)
+proc collectStats(values: openArray[float], lowerBound, upperBound: float): LogStats =
+  let (lo, hi) = minmax(values)
   let total = foldl(values, a + b, 0.0)
   result = LogStats(
-    minimum: minVal,
-    maximum: maxVal,
+    minimum: lo,
+    maximum: hi,
     total: total,
-    withinRange: allIt(values, it >= lower and it <= upper))
+    withinRange: allIt(values, it >= lowerBound and it <= upperBound))
 
 let
   readings = @[18.2, 19.5, 21.0, 17.8, 20.3]
-  stats = gatherStats(readings, 15.0, 25.0)
-assert stats.minimum == 17.8
-assert stats.withinRange == true
+  stats = collectStats(readings, 15.0, 25.0)
+echo stats.minimum      # prints 17.8
+echo stats.withinRange  # prints true
 ```
 
 ---
 
-## IX. Quick Reference Table
+## Quick reference table
 
 | Task | Mutates the argument | Returns a new seq/value |
 |---|---|---|
-| Transform every element | — | `map`, `mapIt` |
-| Transform every element in place | `apply`, `applyIt` | — |
-| Keep elements matching a condition | — | `filter` (proc/iterator), `filterIt` |
-| Keep elements matching a condition in place | `keepIf`, `keepItIf` | — |
-| Find the index of the first match | — | `findIt` |
-| Check "at least one" / "all" | — | `any`/`anyIt`, `all`/`allIt` |
-| Count occurrences | — | `count`, `countIt` |
-| Find min/max by a comparator | — | `min`, `max` |
-| Find the index of the min/max | — | `minIndex`, `maxIndex` |
-| Find min and max in a single pass | — | `minmax` |
-| Fold a sequence into a value | — | `foldl`, `foldr` |
-| Pair up two sequences | — | `zip` |
-| Split a sequence of pairs | — | `unzip` |
-| Turn an iterable into a `seq` | — | `toSeq` |
-| Replicate a single value | — | `repeat` |
-| Repeat a whole sequence | — | `cycle` |
-| Build a `seq` by evaluating an expression per index | — | `newSeqWith` |
-| Concatenate several sequences | — | `concat` |
-| Split a sequence into N parts | — | `distribute` |
-| Add an element without duplicates | `addUnique` | — |
-| Remove duplicates | — | `deduplicate` |
-| Remove a range of elements | `delete` | — |
-| Insert elements in the middle | `insert` | — |
-| Apply a transform to AST literals | — | `mapLiterals` (macro) |
+| Join several seqs | no | `concat` |
+| Repeat a whole seq n times | no | `cycle` |
+| Repeat one element n times | no | `repeat` |
+| Create a seq with an individually initialized element | no | `newSeqWith` |
+| Turn a range/set/iterator into a seq | no | `toSeq` |
+| Transform every element (explicit function) | no | `map` |
+| Transform every element (via `it`) | no | `mapIt` |
+| Mutate every element by reference | yes | `apply` (variant A) |
+| Replace every element with a function's result | yes | `apply` (variant B) |
+| Walk elements for a side effect | no | `apply` (variant C) |
+| Replace every element with an `it`-expression | yes | `applyIt` |
+| Replace literals in an AST constructor at compile time | no | `mapLiterals` |
+| Keep only matching elements (explicit function) | no | `filter` (proc) |
+| Keep only matching elements lazily, no intermediate seq | no | `filter` (iterator) |
+| Keep only matching elements (via `it`) | no | `filterIt` |
+| Keep only matching elements in place | yes | `keepIf` |
+| Keep only matching elements in place (via `it`) | yes | `keepItIf` |
+| Find the index of the first matching element | no | `findIt` |
+| Check that every element matches | no | `all` / `allIt` |
+| Check that at least one element matches | no | `any` / `anyIt` |
+| Count elements by condition | no | `countIt` |
+| Count occurrences of a specific value | no | `count` |
+| Fold left to right (first element as accumulator) | no | `foldl` |
+| Fold left to right (starting value of another type) | no | `foldl` (with `first`) |
+| Fold right to left | no | `foldr` |
+| Find min/max with a custom comparison | no | `min` / `max` |
+| Find the index of the min/max element | no | `minIndex` / `maxIndex` |
+| Get both min and max in a single pass | no | `minmax` |
+| Add an element if it isn't already there | yes | `addUnique` |
+| Remove repeated elements | no | `deduplicate` |
+| Delete a range of elements | yes | `delete` |
+| Insert a set of elements at a position | yes | `insert` |
+| Stitch two seqs into a seq of pairs | no | `zip` |
+| Split a seq of pairs into two seqs | no | `unzip` |
+| Split a seq into N parts | no | `distribute` |
+| Iterate a closure iterator in `for`/`It` templates | no | `items` |
 
 ---
 
-## X. Summary: Which Procedure to Choose
+## Summary: which procedure to choose
 
-- Need a new sequence with transformed elements, leaving the original
-  untouched → `map` (with a `proc`) or `mapIt` (with an `it`
-  expression).
-- Need to transform elements **in place** → `apply` (three forms based
-  on `op`'s signature), or, more concisely, `applyIt`.
-- Need to keep only matching elements, returning a new container →
-  `filter` (the `iterator` version for consuming in a loop, the `proc`
-  version for a materialized `seq`) or `filterIt`.
-- Need to filter **in place**, without allocating new memory →
-  `keepIf` or `keepItIf`.
-- Need only the index of the first match → `findIt`.
-- Need to know whether a condition holds for at least one / for all
-  elements → `anyIt`/`any` and `allIt`/`all` respectively.
-- Need to count occurrences of a specific value → `count`; of an
-  arbitrary condition → `countIt`.
-- Need a minimum/maximum by a non-standard criterion (not via `<`) →
-  `min`/`max` with a comparator; need the index specifically →
-  `minIndex`/`maxIndex`; need both at once in a single pass → `minmax`.
-- Need to fold a sequence into a single value, left to right → `foldl`
-  (no starting value, if the container is guaranteed non-empty; with a
-  starting value, if you need a different accumulator type or the
-  container may be empty); right to left → `foldr`.
-- Need to pair two lists into a list of tuples → `zip`; split a list
-  of pairs back into two lists → `unzip`.
-- Need to turn a range/set/iterator into a `seq` → `toSeq`.
-- Need to create a sequence of N identical copies → `repeat`; of N
-  independently computed values (e.g. random ones) → `newSeqWith`;
-  repeat the content of an existing sequence N times → `cycle`.
-- Need to concatenate several sequences into one → `concat`; the
-  reverse — split one into N parts → `distribute`.
-- Need to add an element only if it's not already present →
-  `addUnique`; remove all repeats → `deduplicate` (with `isSorted =
-  true` if the data is already sorted — it's faster).
-- Need to remove a range of elements in place → `delete`; insert a
-  block of elements in the middle → `insert`.
-- Need to apply a transform to literals inside an AST constructor at
-  compile time → `mapLiterals`.
+- Need to turn a range, set, or iterator into a `seq` → use `toSeq`.
+- Need to create a `seq` of `N` independently initialized elements (including a "2D" seq) → use `newSeqWith`; if it's the same element repeated — `repeat`; if it's a whole seq repeated — `cycle`.
+- Need to join several sequences into one → use `concat`.
+- Need to transform a seq element-wise without touching the source → use `mapIt` (or `map`, if the transformation is already a standalone function).
+- Need to change a seq's elements in place → use `applyIt`/`apply`, depending on whether you're mutating the element by reference or returning a new value of the same type.
+- Need to keep only part of the elements, returning a new seq → use `filterIt` (or `filter`, if the predicate is already a ready-made function); for a lazy pass with no intermediate seq — the `filter` iterator.
+- Need to keep only part of the elements in place, without creating a new seq → use `keepItIf`/`keepIf`.
+- Need to find the index of the first matching element → use `findIt`.
+- Need to check a "for all"/"at least one" condition → use `allIt`/`anyIt`.
+- Need to count elements by condition → use `countIt`; if the condition is just equality to a value → `count`.
+- Need to fold a seq into a single value → use `foldl` (left to right, with no starting value or with a starting value of another type) or `foldr` (right to left).
+- Need to find the minimum/maximum with a non-standard comparison → use `min`/`max` with `cmp`; if you specifically need the index → `minIndex`/`maxIndex`; if you need both at once in a single pass → `minmax`.
+- Need to add an element without duplicating it → use `addUnique`; need to remove existing duplicates → `deduplicate` (with `isSorted = true` if the data is definitely sorted).
+- Need to delete or insert a range of elements inside a seq → use `delete`/`insert`.
+- Need to stitch two sequences into pairs or split pairs back apart → use `zip`/`unzip`.
+- Need to split a seq into roughly equal parts, for example to distribute work → use `distribute`.
+- Need to iterate a closure iterator in a `for` loop or in `mapIt`/`filterIt` templates → use the `items` overload for iterators.

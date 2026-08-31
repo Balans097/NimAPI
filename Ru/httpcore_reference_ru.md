@@ -1,743 +1,1005 @@
-# Модуль Nim `httpcore` — полный справочник
+# httpcore — справочник модуля
 
-> **Назначение модуля:** Общие HTTP-примитивы, используемые как в `httpclient`, так и в `asynchttpserver`. Определяет типы, константы и вспомогательные функции, которые формируют словарь HTTP в Nim: коды статусов, методы, версии протокола и заголовки.
->
-> **Стабильность API:** Помечен как *нестабильный* — публичный интерфейс может меняться между релизами Nim.
->
-> **Ключевые архитектурные решения:**
-> - `HttpCode` — это `distinct`-целое, что исключает случайное смешение с обычным `int`.
-> - `HttpHeaders` по умолчанию хранит все ключи в нижнем регистре (или в Title-Case при явном запросе), отражая спецификацию HTTP/1.1, согласно которой имена заголовков регистронезависимы.
-> - У одного заголовочного ключа может быть **несколько значений** — тип хранения `seq[string]` на ключ — что требуется спецификацией HTTP (например, несколько строк `Set-Cookie`).
+> **Импорт:** `import std/httpcore`
+> **Область применения:** общая функциональность для работы с HTTP — заголовки, коды состояния, HTTP-методы и версии протокола, — вынесенная в отдельный модуль, чтобы `httpclient` и `asynchttpserver` не дублировали одну и ту же логику.
 
----
+Модуль httpcore не отправляет запросы и не открывает соединений сам по себе — он задаёт общий словарь типов и операций, которым пользуются и клиент, и сервер, поэтому знание httpcore полезно даже тем, кто напрямую импортирует только httpclient или asynchttpserver.
 
-## Содержание
+В модуле фактически три слабо связанные области: работа с заголовками через тип `HttpHeaders` (нечувствительный к регистру доступ по ключу, поддержка нескольких значений на один ключ), представление кода состояния через тип `HttpCode` вместе с готовым набором именованных констант и предикатами вида `is2xx`, и перечисления `HttpMethod`/`HttpVersion` для типизации метода запроса и версии протокола вместо голых строк.
 
-1. [Типы](#типы)
-   - [`HttpHeaders`](#httpheaders)
-   - [`HttpHeaderValues`](#httpheadervalues)
-   - [`HttpCode`](#httpcode)
-   - [`HttpVersion`](#httpversion)
-   - [`HttpMethod`](#httpmethod)
-2. [Константы](#константы)
-   - [`httpNewLine`](#httpnewline)
-   - [`headerLimit`](#headerlimit)
-   - [Константы HTTP-кодов статуса](#константы-http-кодов-статуса)
-3. [HttpHeaders — создание](#httpheaders--создание)
-   - [`newHttpHeaders` (пустой)](#newhttpheaders-пустой)
-   - [`newHttpHeaders` (из пар)](#newhttpheaders-из-пар)
-4. [HttpHeaders — чтение](#httpheaders--чтение)
-   - [`[]` (только ключ)](#-только-ключ)
-   - [`[]` (ключ + индекс)](#-ключ--индекс)
-   - [`getOrDefault`](#getordefault)
-   - [`hasKey`](#haskey)
-   - [`contains` (HttpHeaderValues)](#contains-httpheadervalues)
-   - [`len`](#len)
-   - [`pairs`](#pairs)
-   - [`$` (HttpHeaders)](#-httpheaders)
-5. [HttpHeaders — запись](#httpheaders--запись)
-   - [`[]=` (одно значение)](#--одно-значение)
-   - [`[]=` (список значений)](#--список-значений)
-   - [`add`](#add)
-   - [`del`](#del)
-   - [`clear`](#clear)
-6. [HttpHeaders — внутреннее](#httpheaders--внутреннее)
-   - [`toCaseInsensitive`](#tocaseinsensitive)
-7. [HttpCode — утилиты](#httpcode--утилиты)
-   - [`$` (HttpCode)](#-httpcode)
-   - [`==` (HttpCode)](#-httpcode-1)
-   - [`is1xx`](#is1xx)
-   - [`is2xx`](#is2xx)
-   - [`is3xx`](#is3xx)
-   - [`is4xx`](#is4xx)
-   - [`is5xx`](#is5xx)
-8. [HttpVersion — утилиты](#httpversion--утилиты)
-   - [`==` (кортеж протокола vs HttpVersion)](#-кортеж-протокола-vs-httpversion)
-9. [HttpMethod — утилиты](#httpmethod--утилиты)
-   - [`contains` (множество HttpMethod)](#contains-множество-httpmethod)
-10. [Парсинг](#парсинг)
-    - [`parseHeader`](#parseheader)
-11. [Конвертер](#конвертер)
-    - [`toString`](#tostring)
+Общая конвенция модуля: там, где операция должна быть нечувствительна к регистру названия заголовка (а имена HTTP-заголовков регистронезависимы по стандарту), внутри вызывается приватная процедура `toCaseInsensitive`, приводящая ключ либо к нижнему регистру, либо к Title-Case — в зависимости от флага, заданного при создании `HttpHeaders`.
 
 ---
 
-## Типы
+## Оглавление
 
-### `HttpHeaders`
-
-```nim
-type HttpHeaders* = ref object
-  table*: TableRef[string, seq[string]]
-  isTitleCase: bool
-```
-
-Центральный контейнер для HTTP-заголовков. Оборачивает хэш-таблицу, отображающую имена заголовков (строки) в **списки** значений (`seq[string]`), поскольку спецификация HTTP допускает повторение одного и того же имени заголовка несколько раз (например, несколько строк `Set-Cookie` или `Accept-Encoding`).
-
-Доступны два режима нормализации:
-- **Режим нижнего регистра** (по умолчанию) — все ключи хранятся в нижнем регистре. Поиск тоже всегда нормализуется, обеспечивая надёжную регистронезависимость.
-- **Режим Title-Case** (`titleCase=true`) — ключи хранятся в HTTP Title-Case (например, `Content-Type`, `X-My-Header`). Полезно, когда сервер или прокси downstream нестандартно чувствителен к регистру.
-
-Поле `table` экспортировано — при необходимости вы можете работать с хранилищем напрямую: итерировать или выполнять массовые операции.
-
-```nim
-let h = newHttpHeaders()
-h["Content-Type"] = "application/json"
-h["content-type"] = "text/html"   # тот же ключ — заменяет!
-echo h["CONTENT-TYPE"]             # "text/html" (регистронезависимо)
-```
+I. [Типы и константы модуля](#i-типы-и-константы-модуля)
+   1. [`HttpHeaders`](#1-httpheaders)
+   2. [`HttpHeaderValues`](#2-httpheadervalues)
+   3. [`HttpCode`](#3-httpcode)
+   4. [`HttpVersion`](#4-httpversion)
+   5. [`HttpMethod`](#5-httpmethod)
+   6. [`httpNewLine` и `headerLimit`](#6-httpnewline-и-headerlimit)
+II. [Создание и настройка заголовков](#ii-создание-и-настройка-заголовков)
+   1. [`newHttpHeaders` (без начальных значений)](#1-newhttpheaders-без-начальных-значений)
+   2. [`newHttpHeaders` (из массива пар ключ-значение)](#2-newhttpheaders-из-массива-пар-ключ-значение)
+   3. [`toCaseInsensitive`](#3-tocaseinsensitive)
+   4. [`$` (представление HttpHeaders строкой)](#4--представление-httpheaders-строкой)
+   5. [`clear`](#5-clear)
+III. [Доступ к значениям и модификация заголовков](#iii-доступ-к-значениям-и-модификация-заголовков)
+   1. [`[]` (все значения ключа)](#1--все-значения-ключа)
+   2. [`toString` (неявное преобразование в string)](#2-tostring-неявное-преобразование-в-string)
+   3. [`[]` (i-е значение ключа)](#3--i-е-значение-ключа)
+   4. [`[]=` (одно значение)](#4--одно-значение)
+   5. [`[]=` (список значений)](#5--список-значений)
+   6. [`add`](#6-add)
+   7. [`del`](#7-del)
+   8. [`pairs`](#8-pairs)
+   9. [`contains` (для HttpHeaderValues)](#9-contains-для-httpheadervalues)
+   10. [`hasKey`](#10-haskey)
+   11. [`getOrDefault`](#11-getordefault)
+   12. [`len`](#12-len)
+IV. [Разбор сырых данных и сравнение версий](#iv-разбор-сырых-данных-и-сравнение-версий)
+   1. [`parseHeader`](#1-parseheader)
+   2. [`==` (кортеж протокола и HttpVersion)](#2--кортеж-протокола-и-httpversion)
+   3. [`contains` (для набора HttpMethod)](#3-contains-для-набора-httpmethod)
+V. [Коды состояния HTTP](#v-коды-состояния-http)
+   1. [Константы `Http100` .. `Http511`](#1-константы-http100--http511)
+   2. [`$` (текстовое представление HttpCode)](#2--текстовое-представление-httpcode)
+   3. [`==` (сравнение двух HttpCode)](#3--сравнение-двух-httpcode)
+   4. [`is1xx`](#4-is1xx)
+   5. [`is2xx`](#5-is2xx)
+   6. [`is3xx`](#6-is3xx)
+   7. [`is4xx`](#7-is4xx)
+   8. [`is5xx`](#8-is5xx)
+VI. [Практические рецепты](#vi-практические-рецепты)
+   1. [Заголовки запроса с несколькими Cookie](#1-заголовки-запроса-с-несколькими-cookie)
+   2. [Проверка успешности ответа по коду состояния](#2-проверка-успешности-ответа-по-коду-состояния)
+   3. [Разбор сырого заголовка из сокета](#3-разбор-сырого-заголовка-из-сокета)
+   4. [Слияние заголовков по умолчанию с пользовательскими](#4-слияние-заголовков-по-умолчанию-с-пользовательскими)
+   5. [Проверка метода против списка разрешённых](#5-проверка-метода-против-списка-разрешённых)
+   6. [Нормализация регистра заголовков перед логированием](#6-нормализация-регистра-заголовков-перед-логированием)
+VII. [Краткая таблица](#vii-краткая-таблица)
+VIII. [Сводка: какую процедуру выбрать](#viii-сводка-какую-процедуру-выбрать)
 
 ---
 
-### `HttpHeaderValues`
+## I. Типы и константы модуля
+
+### 1. `HttpHeaders`
 
 ```nim
-type HttpHeaderValues* = distinct seq[string]
+type
+  HttpHeaders* = ref object
+    table*: TableRef[string, seq[string]]
+    isTitleCase: bool
 ```
 
-Тонкая обёртка вокруг `seq[string]`, возвращаемая оператором `[]` с одним ключом. `distinct` предотвращает случайное использование как обычного `seq`. Встроенный **конвертер** `toString` автоматически извлекает первое значение, когда результат передаётся туда, где ожидается обычная `string`, — это делает типичный доступ к одному значению удобным:
+Что делает: хранит набор HTTP-заголовков как ссылочный объект, где под капотом лежит таблица `имя заголовка -> список значений`, потому что один и тот же заголовок (например, `Set-Cookie`) может встречаться в запросе или ответе несколько раз.
+
+Разбор реализации: поле `table` объявлено экспортируемым (`*`) и доступно напрямую, если нужен полный обход без учёта регистронезависимости, тогда как поле `isTitleCase` скрыто — оно лишь переключает, в каком виде процедура `toCaseInsensitive` нормализует ключи при чтении и записи, и напрямую снаружи модуля не используется.
+
+Список полей:
+
+- `table: TableRef[string, seq[string]]` — изменяемая ссылочная таблица; ключи — уже нормализованные имена заголовков, значения — список из одной или нескольких строк.
+- `isTitleCase: bool` — если true, при выводе и обращении по ключу имена заголовков приводятся к Title-Case (`Content-Length`), иначе — к нижнему регистру.
+
+Пример:
 
 ```nim
-let h = newHttpHeaders({"Content-Length": "42"})
-let s: string = h["Content-Length"]   # конвертер срабатывает: s == "42"
-```
-
-Чтобы получить все значения, приведите обратно к `seq[string]`:
-
-```nim
-let all = seq[string](h["Accept"])
+var h = newHttpHeaders()
+add(h, "X-Trace-Id", "abc123")
+echo contains(h.table, "x-trace-id") # выводит true
 ```
 
 ---
 
-### `HttpCode`
+### 2. `HttpHeaderValues`
 
 ```nim
-type HttpCode* = distinct range[0 .. 599]
+type
+  HttpHeaderValues* = distinct seq[string]
 ```
 
-Типобезопасный код статуса HTTP. Лежащее в основе целое число ограничено диапазоном `0..599` на уровне типов. `distinct` означает, что нельзя случайно передать обычное целое туда, где ожидается `HttpCode`, и наоборот.
+Что делает: оборачивает список значений одного заголовка в отдельный тип, чтобы в местах, где ожидается одиночная строка, автоматически подставлялось первое значение, а в местах, где нужен полный список, — можно было явно привести тип обратно к `seq[string]`.
 
-Для всех стандартных кодов предоставлены именованные константы (например, `Http200`, `Http404`). Можно также сконструировать напрямую: `HttpCode(418)`.
+Разбор реализации: `distinct seq[string]` — это тот же список строк по представлению в памяти, но как отдельный номинальный тип, поэтому напрямую операции над `seq[string]` (например `[]`) к нему не применяются без явного приведения; именно эта изоляция и позволяет безопасно повесить на тип отдельный конвертер `toString`, не рискуя случайно применить его не там.
+
+Пример:
 
 ```nim
-let code = Http404
-echo code           # "404 Not Found"
-echo code.int       # 404
-echo code.is4xx     # true
+var h = newHttpHeaders()
+add(h, "Accept", "text/html")
+add(h, "Accept", "application/json")
+let values = h["Accept"]
+echo seq[string](values) # выводит @["text/html", "application/json"]
 ```
 
 ---
 
-### `HttpVersion`
+### 3. `HttpCode`
 
 ```nim
-type HttpVersion* = enum
-  HttpVer11,   # HTTP/1.1
-  HttpVer10    # HTTP/1.0
+type
+  HttpCode* = distinct range[0 .. 599]
 ```
 
-Перечисляет две версии HTTP, которые распознаёт этот модуль. Используется внутри `httpclient` и `asynchttpserver` для отслеживания версии протокола соединения.
+Что делает: представляет числовой код состояния HTTP (200, 404, 500 и так далее), ограничивая допустимый диапазон значениями 0..599 на уровне системы типов.
+
+Разбор реализации: диапазон специально начинается с 0, а не с наименьшего реального кода состояния (100), чтобы значение по умолчанию для непроинициализированной переменной этого типа было корректным (0), а не приводило к ошибке проверки диапазона при объявлении `var code: HttpCode` без явного значения.
+
+Пример:
+
+```nim
+let code = HttpCode(404)
+echo int(code) # выводит 404
+```
+
+---
+
+### 4. `HttpVersion`
+
+```nim
+type
+  HttpVersion* = enum
+    HttpVer11,
+    HttpVer10
+```
+
+Что делает: перечисляет поддерживаемые версии протокола HTTP — 1.1 и 1.0 — вместо использования отдельных чисел `major`/`minor` по всему коду.
+
+Список значений:
+
+- `HttpVer11` — HTTP/1.1, версия по умолчанию для современных клиентов и серверов.
+- `HttpVer10` — HTTP/1.0, более старая версия без постоянных соединений по умолчанию.
+
+Пример:
 
 ```nim
 let ver = HttpVer11
+echo ver == HttpVer11 # выводит true
 ```
 
 ---
 
-### `HttpMethod`
+### 5. `HttpMethod`
 
 ```nim
-type HttpMethod* = enum
-  HttpHead, HttpGet, HttpPost, HttpPut, HttpDelete,
-  HttpTrace, HttpOptions, HttpConnect, HttpPatch
+type
+  HttpMethod* = enum
+    HttpHead = "HEAD",
+    HttpGet = "GET",
+    HttpPost = "POST",
+    HttpPut = "PUT",
+    HttpDelete = "DELETE",
+    HttpTrace = "TRACE",
+    HttpOptions = "OPTIONS",
+    HttpConnect = "CONNECT",
+    HttpPatch = "PATCH"
 ```
 
-Все девять стандартных методов HTTP-запросов. Строковое представление каждого варианта (например, `"GET"`, `"POST"`) точно соответствует формату на проводе: `$HttpGet == "GET"`.
+Что делает: перечисляет HTTP-методы, каждый вариант связан со своим текстовым представлением через `= "..."`, поэтому значение перечисления и стандартная строка метода взаимно однозначны.
 
-| Вариант | Строка | Типичное применение |
-|---|---|---|
-| `HttpGet` | `GET` | Получить ресурс |
-| `HttpPost` | `POST` | Отправить данные, создать ресурс |
-| `HttpPut` | `PUT` | Заменить ресурс |
-| `HttpPatch` | `PATCH` | Частично изменить ресурс |
-| `HttpDelete` | `DELETE` | Удалить ресурс |
-| `HttpHead` | `HEAD` | Как GET, но без тела ответа |
-| `HttpOptions` | `OPTIONS` | Узнать поддерживаемые методы |
-| `HttpConnect` | `CONNECT` | Открыть TCP-туннель (прокси) |
-| `HttpTrace` | `TRACE` | Эхо запроса (отладка) |
+Разбор реализации: благодаря строковым значениям в объявлении, встроенный `$` для enum уже возвращает правильную строку метода (`"GET"`, `"POST"` и т.д.) без ручного написания процедуры `$`, а обратное преобразование строки в значение перечисления штатно делает `parseEnum[HttpMethod]` — на этом построена процедура `contains` для `set[HttpMethod]` в разделе IV.
+
+Список значений: `HttpHead` (HEAD — тот же ответ, что и на GET, но без тела), `HttpGet` (GET — получение ресурса), `HttpPost` (POST — отправка данных на обработку), `HttpPut` (PUT — загрузка представления ресурса), `HttpDelete` (DELETE — удаление ресурса), `HttpTrace` (TRACE — эхо запроса, полезно для отладки промежуточных серверов), `HttpOptions` (OPTIONS — список поддерживаемых методов), `HttpConnect` (CONNECT — превращает соединение в туннель, обычно для прокси), `HttpPatch` (PATCH — частичное изменение ресурса).
+
+Пример:
 
 ```nim
-echo $HttpPost   # "POST"
-let m = parseEnum[HttpMethod]("DELETE")  # HttpDelete
+echo $HttpPost # выводит POST
 ```
 
 ---
 
-## Константы
-
-### `httpNewLine`
+### 6. `httpNewLine` и `headerLimit`
 
 ```nim
 const httpNewLine* = "\c\L"
-```
-
-Ограничитель строки HTTP: возврат каретки плюс перевод строки (`\r\n`). HTTP/1.x требует именно эту двухбайтовую последовательность в конце каждой строки заголовка и в пустой строке, разделяющей заголовки и тело. Всегда используйте эту константу вместо `"\n"` при построении сырых HTTP-сообщений.
-
-```nim
-let raw = "HTTP/1.1 200 OK" & httpNewLine &
-          "Content-Length: 0" & httpNewLine &
-          httpNewLine
-```
-
----
-
-### `headerLimit`
-
-```nim
 const headerLimit* = 10_000
 ```
 
-Максимальное количество **байт**, которые обработает парсер заголовков. Этот предел защищает от атак исчерпания памяти (HTTP request smuggling, медленные заголовочные флуды). Если блок заголовков превышает этот лимит, парсер в `asynchttpserver` прекращает чтение и отклоняет запрос.
+Что делает: `httpNewLine` — это разделитель строк HTTP-протокола (CR LF), а `headerLimit` — верхняя граница на количество заголовков, которую могут использовать `httpclient` и `asynchttpserver`, чтобы отбросить заведомо испорченный или вредоносный запрос ещё до полного разбора.
+
+Пример:
+
+```nim
+echo len(httpNewLine) # выводит 2
+```
 
 ---
 
-### Константы HTTP-кодов статуса
+## II. Создание и настройка заголовков
 
-```nim
-const Http200* = HttpCode(200)
-const Http404* = HttpCode(404)
-# ... и так далее для каждого стандартного кода
-```
-
-Именованные константы предоставлены для всех зарегистрированных кодов статуса HTTP от 100 до 511. Они существуют исключительно ради читаемости — `Http404` яснее, чем `HttpCode(404)` в логике маршрутизации или формирования ответа.
-
-```nim
-if response.code == Http301:
-  let location = response.headers["Location"]
-  redirect(location)
-```
-
-Полный список охватывает семейства 1xx (Информационные), 2xx (Успех), 3xx (Перенаправление), 4xx (Ошибки клиента) и 5xx (Ошибки сервера), включая расширения WebDAV (102, 207, 208, 423, 424, 507, 508), Early Hints (103), Delta Encoding (226) и другие.
-
----
-
-## HttpHeaders — создание
-
-### `newHttpHeaders` (пустой)
+### 1. `newHttpHeaders` (без начальных значений)
 
 ```nim
 func newHttpHeaders*(titleCase = false): HttpHeaders
 ```
 
-**Создаёт пустой объект `HttpHeaders`.** Внутренняя таблица не имеет записей. Передайте `titleCase = true`, если ключи должны храниться и сериализоваться в HTTP Title-Case, а не в нижнем регистре.
+Что делает: создаёт пустой объект `HttpHeaders` с новой внутренней таблицей.
+
+Список параметров:
+
+- `titleCase: bool` — если true, заголовки при доступе по ключу и при выводе будут в Title-Case (`Content-Type`), по умолчанию false (нижний регистр).
+
+Пример:
 
 ```nim
-let h = newHttpHeaders()                   # ключи в нижнем регистре
-let h2 = newHttpHeaders(titleCase = true)  # ключи в Title-Case
-h2["content-type"] = "text/plain"
-echo h2["content-type"]  # внутри хранится как "Content-Type"
+let h = newHttpHeaders()
+echo len(h) # выводит 0
 ```
 
 ---
 
-### `newHttpHeaders` (из пар)
+### 2. `newHttpHeaders` (из массива пар ключ-значение)
 
 ```nim
 func newHttpHeaders*(keyValuePairs: openArray[tuple[key: string, val: string]],
-                     titleCase = false): HttpHeaders
+                      titleCase = false): HttpHeaders
 ```
 
-**Создаёт предзаполненный объект `HttpHeaders`** из массива пар `(ключ, значение)`. Дубликаты ключей обрабатываются корректно: если один и тот же ключ встречается несколько раз во входном массиве, все значения накапливаются по порядку — ни одно не теряется молча.
+Что делает: создаёт объект `HttpHeaders` и сразу заполняет его переданными парами ключ-значение, при этом повторяющиеся ключи не перезаписывают друг друга, а накапливаются в общий список значений.
+
+Разбор реализации: для каждой пары ключ приводится к нормализованной форме через `toCaseInsensitive`, и если такой ключ в таблице уже встречался, новое значение добавляется в существующий список через `add`, иначе создаётся новая запись с однoэлементным списком; вставка выполнена внутри блока `{.cast(noSideEffect).}`, потому что компилятор не всегда может статически доказать отсутствие побочных эффектов у операций над `TableRef` внутри `func`, хотя фактически процедура работает только с только что созданным локальным объектом и никаких внешних данных не трогает.
+
+Список параметров:
+
+- `keyValuePairs: openArray[tuple[key: string, val: string]]` — исходные пары для заполнения.
+- `titleCase: bool` — регистр отображения ключей, по умолчанию false.
+
+Пример:
 
 ```nim
-let h = newHttpHeaders({
-  "Accept": "text/html",
-  "Accept": "application/json",   # второй Accept — оба сохраняются
-  "Content-Type": "text/plain"
-})
-echo seq[string](h["Accept"])   # @["text/html", "application/json"]
+let h = newHttpHeaders([("Accept", "text/html"), ("Accept", "application/json")])
+echo seq[string](h["Accept"]) # выводит @["text/html", "application/json"]
 ```
 
 ---
 
-## HttpHeaders — чтение
+### 3. `toCaseInsensitive`
 
-### `[]` (только ключ)
+```nim
+func toCaseInsensitive*(headers: HttpHeaders, s: string): string {.inline.}
+```
+
+Что делает: приводит имя заголовка `s` к той нормализованной форме, в которой оно хранится внутри `headers` — либо к Title-Case, либо к нижнему регистру, в зависимости от `headers.isTitleCase`.
+
+Разбор реализации: сама процедура не хранит состояние и не принимает решения о смысле заголовков, она лишь маршрутизирует вызов либо в приватную `toTitleCase`, либо во встроенную `toLowerAscii`; `toTitleCase`, в свою очередь, идёт по строке слева направо и переводит символ в верхний регистр, если предыдущим символом было начало строки или дефис — этим достигается вид `Content-Length` из `content-length`.
+
+Согласно комментарию в исходном коде, эта процедура предназначена только для внутреннего использования модулями httpclient и asynchttpserver и не рекомендована к прямому вызову из пользовательского кода.
+
+Список параметров:
+
+- `headers: HttpHeaders` — источник настройки регистра (используется только флаг `isTitleCase`, не содержимое).
+- `s: string` — исходное имя заголовка.
+
+Пример:
+
+```nim
+let h = newHttpHeaders(titleCase = true)
+echo toCaseInsensitive(h, "content-length") # выводит Content-Length
+```
+
+---
+
+### 4. `$` (представление HttpHeaders строкой)
+
+```nim
+func `$`*(headers: HttpHeaders): string {.inline.}
+```
+
+Что делает: возвращает строковое представление всех заголовков целиком, делегируя работу стандартному `$` для `TableRef[string, seq[string]]`.
+
+Пример:
+
+```nim
+let h = newHttpHeaders([("Accept", "text/html")])
+echo $h # выводит {accept: @["text/html"]}
+```
+
+---
+
+### 5. `clear`
+
+```nim
+proc clear*(headers: HttpHeaders) {.inline.}
+```
+
+Что делает: удаляет из объекта все заголовки, оставляя пустую таблицу, но не создавая новый объект `HttpHeaders` — все существующие ссылки на этот объект увидят опустевшую таблицу.
+
+Пример:
+
+```nim
+var h = newHttpHeaders([("Accept", "text/html")])
+clear(h)
+echo len(h) # выводит 0
+```
+
+---
+
+## III. Доступ к значениям и модификация заголовков
+
+### 1. `[]` (все значения ключа)
 
 ```nim
 func `[]`*(headers: HttpHeaders, key: string): HttpHeaderValues
 ```
 
-**Возвращает все значения для данного ключа заголовка** в виде `HttpHeaderValues` (обёрнутый `seq[string]`). Поиск всегда регистронезависим, независимо от того, как ключ был сохранён. Если ключ не существует, выбрасывается `KeyError`.
+Что делает: возвращает все значения, связанные с ключом `key`, в виде `HttpHeaderValues`; если такого ключа нет вообще, поднимается исключение, а не возвращается пустой результат.
 
-Когда результат используется в контексте `string`, неявный **конвертер** возвращает только первое значение. Для явного доступа ко всем значениям приведите к `seq[string]` или используйте двухаргументную форму ниже.
+Список параметров:
+
+- `headers: HttpHeaders` — источник данных.
+- `key: string` — имя заголовка, регистр не важен.
+
+Пример:
 
 ```nim
-let h = newHttpHeaders({"Accept": "text/html", "Accept": "application/json"})
-let first: string = h["Accept"]             # "text/html" через конвертер
-let all = seq[string](h["Accept"])          # @["text/html", "application/json"]
+let h = newHttpHeaders([("Accept", "text/html")])
+echo toString(h["Accept"]) # выводит text/html
+doAssertRaises(KeyError):
+  discard h["X-Not-Set"]
 ```
 
 ---
 
-### `[]` (ключ + индекс)
-
-```nim
-func `[]`*(headers: HttpHeaders, key: string, i: int): string
-```
-
-**Возвращает `i`-е значение** (нумерация с нуля) для данного ключа заголовка. Выбрасывает `KeyError`, если ключ не существует, и `IndexDefect`, если `i` выходит за пределы.
-
-```nim
-let h = newHttpHeaders({"Accept": "text/html", "Accept": "application/json"})
-echo h["Accept", 0]   # "text/html"
-echo h["Accept", 1]   # "application/json"
-```
-
----
-
-### `getOrDefault`
-
-```nim
-func getOrDefault*(headers: HttpHeaders, key: string,
-                   default = @[""].HttpHeaderValues): HttpHeaderValues
-```
-
-**Безопасная версия `[]`** — возвращает значения для `key`, если он существует, или `default` — если нет. В отличие от `[]`, никогда не выбрасывает исключение для отсутствующего ключа. По умолчанию возвращается `@[""]` (одна пустая строка в `HttpHeaderValues`), которая преобразуется в пустую строку через конвертер `toString`.
-
-```nim
-let h = newHttpHeaders()
-let ct: string = h.getOrDefault("Content-Type")   # "" (без исключения)
-let custom = h.getOrDefault("X-My-Header", @["fallback"].HttpHeaderValues)
-```
-
----
-
-### `hasKey`
-
-```nim
-func hasKey*(headers: HttpHeaders, key: string): bool
-```
-
-**Возвращает `true`**, если заголовок с данным ключом существует (регистронезависимо). Используйте это перед доступом через `[]`, когда исключение недопустимо.
-
-```nim
-if headers.hasKey("Authorization"):
-  let token = headers["Authorization"]
-  authenticate(token)
-```
-
----
-
-### `contains` (HttpHeaderValues)
-
-```nim
-func contains*(values: HttpHeaderValues, value: string): bool
-```
-
-**Проверяет, присутствует ли конкретная строка** среди значений коллекции `HttpHeaderValues`. Сравнение **регистронезависимо**, что соответствует семантике HTTP (например, `"gzip"` и `"GZIP"` — одна и та же кодировка).
-
-```nim
-let h = newHttpHeaders({"Accept-Encoding": "gzip, deflate"})
-# Примечание: после парсинга заголовок хранится как два отдельных значения
-if "gzip" in h["Accept-Encoding"]:
-  echo "Клиент принимает gzip"
-```
-
----
-
-### `len`
-
-```nim
-func len*(headers: HttpHeaders): int
-```
-
-**Возвращает количество различных ключей заголовков**, хранящихся в данный момент. Обратите внимание: считаются ключи, а не суммарное число значений — заголовок с тремя значениями `Accept` всё равно даёт 1 в `len`.
-
-```nim
-let h = newHttpHeaders({"A": "1", "B": "2"})
-echo h.len   # 2
-```
-
----
-
-### `pairs`
-
-```nim
-iterator pairs*(headers: HttpHeaders): tuple[key, value: string]
-```
-
-**Итерирует по каждой отдельной паре ключ-значение**, выдавая по одному кортежу `(key, value)` за раз. Если у ключа несколько значений — он выдаётся по одному разу на каждое значение. Это правильный итератор для сериализации заголовков в проводной формат.
-
-```nim
-let h = newHttpHeaders({"Accept": "text/html", "Accept": "application/json",
-                         "Content-Type": "text/plain"})
-for key, val in h.pairs:
-  echo key, ": ", val
-# Accept: text/html
-# Accept: application/json
-# Content-Type: text/plain
-```
-
----
-
-### `$` (HttpHeaders)
-
-```nim
-func `$`*(headers: HttpHeaders): string
-```
-
-**Преобразует объект заголовков в его строковое представление** — идентично вызову `$` на лежащем в основе `TableRef`. Полезно для отладки; вывод — синтаксис Nim-таблицы, а не корректный блок HTTP-заголовков.
-
-```nim
-let h = newHttpHeaders({"X-Foo": "bar"})
-echo h   # {"x-foo": @["bar"]}
-```
-
----
-
-## HttpHeaders — запись
-
-### `[]=` (одно значение)
-
-```nim
-proc `[]=`*(headers: HttpHeaders, key, value: string)
-```
-
-**Устанавливает заголовок ровно в одно значение**, полностью заменяя все существующие значения для этого ключа. Если нужно сохранить существующие значения и добавить новое, используйте `add`.
-
-```nim
-let h = newHttpHeaders()
-h["Content-Type"] = "text/html"
-h["Content-Type"] = "application/json"  # заменяет предыдущее
-echo h["Content-Type"]  # "application/json"
-```
-
----
-
-### `[]=` (список значений)
-
-```nim
-proc `[]=`*(headers: HttpHeaders, key: string, value: seq[string])
-```
-
-**Устанавливает заголовок сразу в список значений**, заменяя все существующие записи. Если переданная последовательность `value` **пуста** — ключ заголовка полностью удаляется из таблицы. Это удобный способ удалить заголовок.
-
-```nim
-let h = newHttpHeaders()
-h["Accept"] = @["text/html", "application/json"]
-echo h["Accept", 0]   # "text/html"
-
-h["Accept"] = @[]     # удаляет заголовок "Accept"
-echo h.hasKey("Accept")  # false
-```
-
----
-
-### `add`
-
-```nim
-proc add*(headers: HttpHeaders, key, value: string)
-```
-
-**Добавляет значение** к списку значений для `key`. Если ключ ещё не существует — создаётся с этим единственным значением. В отличие от `[]=`, существующие значения сохраняются. Именно так представляются многозначные заголовки вроде `Set-Cookie`.
-
-```nim
-let h = newHttpHeaders()
-h.add("Set-Cookie", "session=abc; HttpOnly; Secure")
-h.add("Set-Cookie", "lang=en")
-echo seq[string](h["Set-Cookie"])
-# @["session=abc; HttpOnly; Secure", "lang=en"]
-```
-
----
-
-### `del`
-
-```nim
-proc del*(headers: HttpHeaders, key: string)
-```
-
-**Удаляет все значения**, связанные с данным ключом. Если ключ не существует — ничего не происходит (без исключения). Поиск регистронезависим.
-
-```nim
-let h = newHttpHeaders({"Authorization": "Bearer token123"})
-h.del("Authorization")
-echo h.hasKey("Authorization")  # false
-```
-
----
-
-### `clear`
-
-```nim
-proc clear*(headers: HttpHeaders)
-```
-
-**Удаляет все записи** из объекта заголовков, приводя его в то же состояние, что и свежесозданный пустой `HttpHeaders`. Сам объект остаётся валидным и может быть использован повторно.
-
-```nim
-let h = newHttpHeaders({"X-A": "1", "X-B": "2"})
-h.clear()
-echo h.len   # 0
-```
-
----
-
-## HttpHeaders — внутреннее
-
-### `toCaseInsensitive`
-
-```nim
-func toCaseInsensitive*(headers: HttpHeaders, s: string): string
-```
-
-**Нормализует строку ключа** в соответствии с режимом объекта заголовков: возвращает версию в нижнем регистре в режиме по умолчанию или в Title-Case при `isTitleCase = true`. Документирован как «только для внутреннего использования» — напрямую вы его, как правило, не вызываете, но понимание его работы проясняет, почему доступ к заголовкам регистронезависим.
-
----
-
-## HttpCode — утилиты
-
-### `$` (HttpCode)
-
-```nim
-func `$`*(code: HttpCode): string
-```
-
-**Преобразует `HttpCode` в полную строку HTTP-статуса**, включая числовой код и стандартную фразу-причину. Это формат, ожидаемый на проводе и в журналах.
-
-```nim
-echo $Http200   # "200 OK"
-echo $Http404   # "404 Not Found"
-echo $Http418   # "418 I'm a teapot"
-echo $HttpCode(999)  # "999"  (неизвестные коды — только число)
-```
-
-Неизвестные коды (не входящие в стандартную таблицу) отображаются лишь как числовая строка без фразы-причины.
-
----
-
-### `==` (HttpCode)
-
-```nim
-func `==`*(a, b: HttpCode): bool
-```
-
-**Сравнение на равенство** двух значений `HttpCode` (заимствовано от лежащего в основе целого). Позволяет писать естественные сравнения вида `response.code == Http200`.
-
-```nim
-doAssert Http200 == HttpCode(200)
-doAssert Http404 != Http500
-```
-
----
-
-### `is1xx`
-
-```nim
-func is1xx*(code: HttpCode): bool
-```
-
-**Возвращает `true`**, если код находится в диапазоне 100–199 (Информационные ответы). Они означают, что сервер получил запрос и клиент должен продолжать.
-
-```nim
-doAssert is1xx(Http100)   # Continue
-doAssert is1xx(Http103)   # Early Hints
-doAssert not is1xx(Http200)
-```
-
----
-
-### `is2xx`
-
-```nim
-func is2xx*(code: HttpCode): bool
-```
-
-**Возвращает `true`**, если код в диапазоне 200–299 (Успешные ответы). Самое важное семейство: запрос был получен, понят и принят.
-
-```nim
-if response.code.is2xx:
-  processBody(response.body)
-```
-
----
-
-### `is3xx`
-
-```nim
-func is3xx*(code: HttpCode): bool
-```
-
-**Возвращает `true`**, если код в диапазоне 300–399 (Перенаправление). Клиент должен предпринять дополнительное действие — как правило, перейти по URL из заголовка `Location`.
-
-```nim
-if response.code.is3xx:
-  let newUrl = response.headers["Location"]
-  followRedirect(newUrl)
-```
-
----
-
-### `is4xx`
-
-```nim
-func is4xx*(code: HttpCode): bool
-```
-
-**Возвращает `true`**, если код в диапазоне 400–499 (Ошибки клиента). Запрос содержит синтаксическую ошибку или не может быть выполнен. Проблема на стороне клиента.
-
-```nim
-if response.code.is4xx:
-  echo "Ошибка запроса: ", $response.code
-```
-
----
-
-### `is5xx`
-
-```nim
-func is5xx*(code: HttpCode): bool
-```
-
-**Возвращает `true`**, если код в диапазоне 500–599 (Ошибки сервера). Сервер не смог выполнить корректный запрос. Проблема на стороне сервера.
-
-```nim
-if response.code.is5xx:
-  retryWithBackoff()
-```
-
----
-
-## HttpVersion — утилиты
-
-### `==` (кортеж протокола vs HttpVersion)
-
-```nim
-func `==`*(protocol: tuple[orig: string, major, minor: int],
-           ver: HttpVersion): bool
-```
-
-**Сравнивает распарсенный дескриптор протокола в виде кортежа** (возвращаемый HTTP-парсерами Nim в форме `(orig: "HTTP/1.1", major: 1, minor: 1)`) со значением перечисления `HttpVersion`. Позволяет писать читаемые проверки версии без ручного сравнения чисел major/minor.
-
-```nim
-let proto = (orig: "HTTP/1.1", major: 1, minor: 1)
-doAssert proto == HttpVer11
-doAssert not (proto == HttpVer10)
-```
-
----
-
-## HttpMethod — утилиты
-
-### `contains` (множество HttpMethod)
-
-```nim
-func contains*(methods: set[HttpMethod], x: string): bool
-```
-
-**Проверяет, принадлежит ли строка с именем метода** (например, `"GET"`, `"POST"`) заданному множеству значений `HttpMethod`. Это включает оператор `in` со строковым именем метода слева, что удобно при маршрутизации запросов.
-
-```nim
-let readOnly = {HttpGet, HttpHead, HttpOptions}
-if "POST" in readOnly:
-  echo "не будет выведено"
-if "GET" in readOnly:
-  echo "GET — безопасный метод"   # выведет это
-```
-
----
-
-## Парсинг
-
-### `parseHeader`
-
-```nim
-func parseHeader*(line: string): tuple[key: string, value: seq[string]]
-```
-
-**Парсит одну сырую строку HTTP-заголовка** в кортеж `(key, value)`. Ключ — всё до первого `:`, значения — разделённые запятыми токены, следующие за ним (после удаления ведущих пробелов). Заголовок `Cookie` обрабатывается особым образом: он сохраняется как единое нераздроблённое значение, поскольку куки используют `;` как разделитель, а не `,`.
-
-Предназначен для внутреннего использования в `asynchttpserver` и `httpclient`. Вы будете вызывать это напрямую только если реализуете низкоуровневый HTTP-парсер.
-
-```nim
-let h = parseHeader("Content-Type: text/html, application/xhtml+xml")
-echo h.key           # "Content-Type"
-echo h.value         # @["text/html", "application/xhtml+xml"]
-
-let c = parseHeader("Cookie: session=abc; user=john")
-echo c.key           # "Cookie"
-echo c.value         # @["session=abc; user=john"]  (не разбивается)
-```
-
----
-
-## Конвертер
-
-### `toString`
+### 2. `toString` (неявное преобразование в string)
 
 ```nim
 converter toString*(values: HttpHeaderValues): string
 ```
 
-**Неявное преобразование** из `HttpHeaderValues` в `string`, извлекающее первое значение. Именно этот конвертер делает доступ к одному значению заголовка удобным — можно присваивать `headers["Content-Type"]` напрямую в переменную типа `string` без явного приведения. Однако имейте в виду: если у заголовка несколько значений, все, кроме первого, молча игнорируются через этот путь.
+Что делает: неявно превращает `HttpHeaderValues` в обычную строку, беря из списка первый элемент — благодаря этому `HttpHeaderValues`, возвращённый оператором `[]`, можно передавать в любое место, ожидающее `string`, без ручного вызова процедуры.
+
+Разбор реализации: как конвертер, эта процедура вызывается компилятором автоматически на границе типов, поэтому в примерах модуля значение `headers["Accept"]` часто выглядит как обычная строка, хотя формально имеет тип `HttpHeaderValues`; если список значений пуст, обращение к нулевому элементу поднимет исключение выхода за границы — на практике этого не происходит, потому что оператор `[]=` не допускает сохранения пустого списка (см. пункт 5 ниже).
+
+Пример:
 
 ```nim
-let h = newHttpHeaders({"Content-Length": "128"})
-let len: string = h["Content-Length"]   # конвертер срабатывает автоматически
-# Эквивалентная явная форма:
-let len2 = seq[string](h["Content-Length"])[0]
+let h = newHttpHeaders([("Accept", "text/html")])
+let s: string = h["Accept"]
+echo s # выводит text/html
 ```
 
 ---
 
-## Полный рабочий пример
+### 3. `[]` (i-е значение ключа)
 
 ```nim
-import std/httpcore
+func `[]`*(headers: HttpHeaders, key: string, i: int): string
+```
 
-# Формируем заголовки ответа
-let headers = newHttpHeaders({
-  "Content-Type": "application/json",
-  "Cache-Control": "no-store"
-}, titleCase = true)
+Что делает: возвращает конкретное значение с индексом `i` из списка, связанного с ключом; если ключа нет или индекс выходит за пределы списка, поднимается исключение.
 
-headers.add("Set-Cookie", "session=abc; HttpOnly; Secure")
-headers.add("Set-Cookie", "lang=ru")
+Список параметров:
 
-# Читаем заголовки
-echo headers["Content-Type"]          # "application/json"
-echo headers["Set-Cookie", 1]         # "lang=ru"
-echo headers.len                       # 3 различных ключа
+- `headers: HttpHeaders` — источник данных.
+- `key: string` — имя заголовка.
+- `i: int` — индекс значения, начиная с 0.
 
-# Итерация для сериализации на провод
-for key, val in headers.pairs:
-  echo key & ": " & val
+Пример:
 
-# Обработка кодов статуса
-proc handleResponse(code: HttpCode) =
-  if code.is2xx:
-    echo "Успех: ", $code
-  elif code.is3xx:
-    echo "Перенаправление: ", $code
-  elif code.is4xx:
-    echo "Ошибка клиента: ", $code
-  elif code.is5xx:
-    echo "Ошибка сервера: ", $code
-
-handleResponse(Http200)   # Успех: 200 OK
-handleResponse(Http301)   # Перенаправление: 301 Moved Permanently
-handleResponse(Http503)   # Ошибка сервера: 503 Service Unavailable
-
-# Маршрутизация по методу
-let safeMethods = {HttpGet, HttpHead, HttpOptions}
-if "DELETE" in safeMethods:
-  echo "не будет выведено"
-if "GET" in safeMethods:
-  echo "GET — безопасный метод"
+```nim
+let h = newHttpHeaders([("Accept", "text/html"), ("Accept", "application/json")])
+echo h["Accept", 1] # выводит application/json
 ```
 
 ---
 
-*Справочник охватывает модуль `std/httpcore` стандартной библиотеки Nim согласно исходному коду модуля.*
+### 4. `[]=` (одно значение)
+
+```nim
+proc `[]=`*(headers: HttpHeaders, key, value: string)
+```
+
+Что делает: заменяет все существующие значения ключа одним новым значением `value`, стирая предыдущий список полностью, даже если в нём было несколько элементов.
+
+Список параметров:
+
+- `headers: HttpHeaders` — изменяемый объект.
+- `key: string` — имя заголовка.
+- `value: string` — новое единственное значение.
+
+Пример:
+
+```nim
+var h = newHttpHeaders([("Accept", "text/html"), ("Accept", "application/json")])
+h["Accept"] = "text/plain"
+echo seq[string](h["Accept"]) # выводит @["text/plain"]
+```
+
+---
+
+### 5. `[]=` (список значений)
+
+```nim
+proc `[]=`*(headers: HttpHeaders, key: string, value: seq[string])
+```
+
+Что делает: заменяет значения ключа целым списком за один вызов; граничный случай — если передать пустой список, ключ вообще удаляется из заголовков, а не остаётся с пустым списком значений.
+
+Список параметров:
+
+- `headers: HttpHeaders` — изменяемый объект.
+- `key: string` — имя заголовка.
+- `value: seq[string]` — новый список значений; пустой список означает удаление ключа.
+
+Пример:
+
+```nim
+var h = newHttpHeaders([("Accept", "text/html")])
+h["Accept"] = @["text/plain", "text/csv"]
+echo seq[string](h["Accept"]) # выводит @["text/plain", "text/csv"]
+h["Accept"] = newSeq[string]()
+echo hasKey(h, "Accept") # выводит false
+```
+
+---
+
+### 6. `add`
+
+```nim
+proc add*(headers: HttpHeaders, key, value: string)
+```
+
+Что делает: добавляет значение к существующему списку значений ключа, не удаляя то, что там уже было; если ключа ещё нет, он создаётся с одним значением.
+
+Список параметров:
+
+- `headers: HttpHeaders` — изменяемый объект.
+- `key: string` — имя заголовка.
+- `value: string` — добавляемое значение.
+
+Пример:
+
+```nim
+var h = newHttpHeaders()
+add(h, "Set-Cookie", "a=1")
+add(h, "Set-Cookie", "b=2")
+echo seq[string](h["Set-Cookie"]) # выводит @["a=1", "b=2"]
+```
+
+---
+
+### 7. `del`
+
+```nim
+proc del*(headers: HttpHeaders, key: string)
+```
+
+Что делает: полностью удаляет ключ и все его значения из заголовков; если ключа не было, вызов не вызывает ошибки.
+
+Список параметров:
+
+- `headers: HttpHeaders` — изменяемый объект.
+- `key: string` — удаляемое имя заголовка.
+
+Пример:
+
+```nim
+var h = newHttpHeaders([("Accept", "text/html")])
+del(h, "Accept")
+echo hasKey(h, "Accept") # выводит false
+```
+
+---
+
+### 8. `pairs`
+
+```nim
+iterator pairs*(headers: HttpHeaders): tuple[key, value: string]
+```
+
+Что делает: последовательно выдаёт пары `(key, value)` для всех заголовков; граничный случай — если у ключа несколько значений, для этого ключа будет выдано несколько отдельных пар подряд, а не одна пара со списком.
+
+Пример:
+
+```nim
+let h = newHttpHeaders([("Accept", "text/html"), ("Accept", "application/json")])
+for key, value in pairs(h):
+  echo key, " -> ", value
+# выводит:
+# accept -> text/html
+# accept -> application/json
+```
+
+---
+
+### 9. `contains` (для HttpHeaderValues)
+
+```nim
+func contains*(values: HttpHeaderValues, value: string): bool
+```
+
+Что делает: проверяет, есть ли строка `value` среди значений `values`, сравнивая без учёта регистра.
+
+Разбор реализации: процедура явно приводит и сохранённые значения, и искомую строку к нижнему регистру перед сравнением, поэтому `"text/HTML"` и `"text/html"` считаются совпадающими; сложность — O(n) от количества значений, так как выполняется линейный перебор без предварительной сортировки.
+
+Список параметров:
+
+- `values: HttpHeaderValues` — список значений одного заголовка.
+- `value: string` — искомая строка.
+
+Пример:
+
+```nim
+let h = newHttpHeaders([("Accept", "text/HTML")])
+echo contains(h["Accept"], "text/html") # выводит true
+```
+
+---
+
+### 10. `hasKey`
+
+```nim
+func hasKey*(headers: HttpHeaders, key: string): bool
+```
+
+Что делает: проверяет наличие ключа среди заголовков без риска поднять исключение, в отличие от оператора `[]`.
+
+Список параметров:
+
+- `headers: HttpHeaders` — источник данных.
+- `key: string` — имя заголовка.
+
+Пример:
+
+```nim
+let h = newHttpHeaders([("Accept", "text/html")])
+echo hasKey(h, "accept") # выводит true
+```
+
+---
+
+### 11. `getOrDefault`
+
+```nim
+func getOrDefault*(headers: HttpHeaders, key: string,
+                    default = HttpHeaderValues(@[""])): HttpHeaderValues
+```
+
+Что делает: безопасный вариант чтения — возвращает значения ключа, если он есть, иначе возвращает `default`, не поднимая исключений.
+
+Разбор реализации: значение по умолчанию для параметра `default` в исходном коде записано через постфиксный синтаксис `@[""].HttpHeaderValues`; при переносе в справочник эта запись переписана в требуемой префиксной форме `HttpHeaderValues(@[""])` — это то же самое приведение списка из одной пустой строки к типу `HttpHeaderValues`.
+
+Список параметров:
+
+- `headers: HttpHeaders` — источник данных.
+- `key: string` — имя заголовка.
+- `default: HttpHeaderValues` — значение на случай отсутствия ключа, по умолчанию список из одной пустой строки.
+
+Пример:
+
+```nim
+let h = newHttpHeaders()
+echo toString(getOrDefault(h, "X-Trace-Id")) # выводит (пустая строка)
+```
+
+---
+
+### 12. `len`
+
+```nim
+func len*(headers: HttpHeaders): int {.inline.}
+```
+
+Что делает: возвращает количество различных ключей заголовков; граничный случай, о котором легко забыть — это число ключей, а не суммарное число значений по всем ключам.
+
+Пример:
+
+```nim
+let h = newHttpHeaders([("Accept", "text/html"), ("Accept", "application/json")])
+echo len(h) # выводит 1
+```
+
+---
+
+## IV. Разбор сырых данных и сравнение версий
+
+### 1. `parseHeader`
+
+```nim
+func parseHeader*(line: string): tuple[key: string, value: seq[string]]
+```
+
+Что делает: разбирает одну сырую строку HTTP-заголовка вида `"Key: value1, value2"` на имя заголовка и список значений.
+
+Разбор реализации: сначала процедура вызывает `parseUntil` до символа `:`, чтобы выделить ключ; если после двоеточия ничего нет, но ключ непустой, значением становится список из одной пустой строки, а если и ключа нет — пустой список значений (пустая строка целиком). Если ключ, приведённый к нижнему регистру, равен `"cookie"`, то оставшаяся часть строки берётся целиком как единственное значение — это отдельная ветка, потому что значения cookie сами могут содержать запятые, и обычное разбиение по запятой их бы испортило. Во всех остальных случаях остаток строки передаётся приватной вспомогательной процедуре `parseList`, которая идёт по строке, пропуская пробелы (`skipWhitespace`) и вычленяя фрагменты до ближайшей запятой или конца строки (`parseUntil`), добавляя каждый найденный фрагмент в список и пропуская сам разделитель-запятую — по сути, `parseList` реализует упрощённый CSV-разбор в пределах одной строки заголовка.
+
+Список параметров:
+
+- `line: string` — сырая строка заголовка без завершающего перевода строки.
+
+Примечание из исходного кода: процедура используется `asynchttpserver` и `httpclient` внутри и не предназначена для прямого вызова пользователем.
+
+Пример:
+
+```nim
+let parsed = parseHeader("Accept: text/html, application/json")
+echo parsed.key # выводит Accept
+echo parsed.value # выводит @["text/html", "application/json"]
+
+let cookieLine = parseHeader("Cookie: a=1, b=2")
+echo cookieLine.value # выводит @["a=1, b=2"]
+
+let emptyValue = parseHeader("X-Empty:")
+echo emptyValue.value # выводит @[""]
+```
+
+---
+
+### 2. `==` (кортеж протокола и HttpVersion)
+
+```nim
+func `==`*(protocol: tuple[orig: string, major, minor: int], ver: HttpVersion): bool
+```
+
+Что делает: сравнивает разобранную тройку `(orig, major, minor)` (например, результат парсинга строки `"HTTP/1.1"`) со значением перечисления `HttpVersion`, чтобы не писать сравнение чисел вручную в клиентском коде.
+
+Разбор реализации: перечисление сначала переводится в пару чисел (`major`, `minor`) через `case`, а затем оба числа сравниваются с полями кортежа; поле `orig` кортежа в сравнении не участвует вовсе, то есть исходная текстовая запись версии игнорируется, важны только числовые `major`/`minor`.
+
+Список параметров:
+
+- `protocol: tuple[orig: string, major, minor: int]` — разобранные компоненты версии протокола.
+- `ver: HttpVersion` — версия, с которой производится сравнение.
+
+Пример:
+
+```nim
+let protocol = (orig: "HTTP/1.1", major: 1, minor: 1)
+echo protocol == HttpVer11 # выводит true
+echo protocol == HttpVer10 # выводит false
+```
+
+---
+
+### 3. `contains` (для набора HttpMethod)
+
+```nim
+func contains*(methods: set[HttpMethod], x: string): bool
+```
+
+Что делает: проверяет, входит ли метод, заданный строкой `x` (например, `"GET"`), в набор разрешённых методов `methods`.
+
+Разбор реализации: строка сначала преобразуется в значение перечисления через `parseEnum[HttpMethod]`, а затем стандартным образом проверяется принадлежность множеству; если строка не совпадает ни с одним из известных методов, `parseEnum` поднимает исключение `ValueError`, а не возвращает false — это важный граничный случай, отличающий поведение от простого текстового поиска.
+
+Список параметров:
+
+- `methods: set[HttpMethod]` — набор разрешённых методов.
+- `x: string` — проверяемый метод в виде строки (регистр важен, должен совпадать со значением перечисления, например `"GET"`, а не `"get"`).
+
+Пример:
+
+```nim
+let allowed = {HttpGet, HttpPost}
+echo contains(allowed, "GET") # выводит true
+echo contains(allowed, "DELETE") # выводит false
+doAssertRaises(ValueError):
+  discard contains(allowed, "not-a-method")
+```
+
+---
+
+## V. Коды состояния HTTP
+
+### 1. Константы `Http100` .. `Http511`
+
+```nim
+const
+  Http100* = HttpCode(100)
+  Http200* = HttpCode(200)
+  Http404* = HttpCode(404)
+  Http500* = HttpCode(500)
+```
+
+Что делает: модуль объявляет именованную константу `HttpCode` практически для каждого зарегистрированного кода состояния HTTP, чтобы в коде можно было писать `Http404` вместо магического числа `404`.
+
+Список групп по стандартным классам ответа:
+
+| Класс | Диапазон | Примеры констант |
+| --- | --- | --- |
+| Информационные | 100–103 | `Http100`, `Http101`, `Http102`, `Http103` |
+| Успешные | 200–226 | `Http200`, `Http201`, `Http204`, `Http226` |
+| Перенаправления | 300–308 | `Http301`, `Http302`, `Http304`, `Http307` |
+| Ошибки клиента | 400–451 | `Http400`, `Http404`, `Http418`, `Http429` |
+| Ошибки сервера | 500–511 | `Http500`, `Http502`, `Http503`, `Http511` |
+
+Отдельные менее распространённые коды в исходном модуле снабжены комментариями со ссылками на конкретный RFC — например, `Http102` и ряд кодов 4xx/5xx относятся к расширению WebDAV (RFC 4918/2518), `Http103` — к Early Hints (RFC 8297), а `Http425` — к Early Data (RFC 8470); это стоит иметь в виду, встречая в логах редкие коды за пределами привычного набора 200/301/404/500.
+
+Пример:
+
+```nim
+echo int(Http404) # выводит 404
+echo Http404 == HttpCode(404) # выводит true
+```
+
+---
+
+### 2. `$` (текстовое представление HttpCode)
+
+```nim
+func `$`*(code: HttpCode): string
+```
+
+Что делает: превращает числовой код в привычную строку вида `"404 Not Found"`, сразу с пояснением статуса, а не только с числом.
+
+Разбор реализации: внутри — большой `case` по `code.int`, перечисляющий все стандартные коды из константного блока выше; если код не входит ни в один из перечисленных вариантов (например, редкий или ещё не зарегистрированный код), ветка `else` возвращает просто число без пояснения — то есть для нестандартных кодов функция не падает с ошибкой, а мягко деградирует к числовому представлению.
+
+Список параметров:
+
+- `code: HttpCode` — код состояния для форматирования.
+
+Пример:
+
+```nim
+echo $Http404 # выводит 404 Not Found
+echo $HttpCode(499) # выводит 499
+```
+
+---
+
+### 3. `==` (сравнение двух HttpCode)
+
+```nim
+func `==`*(a, b: HttpCode): bool {.borrow.}
+```
+
+Что делает: сравнивает два кода состояния на равенство.
+
+Разбор реализации: реализация не пишется вручную, а «занимается» (`borrow`) у операции `==`, уже существующей для базового типа диапазона `range[0..599]`, то есть фактически сравниваются обычные целые числа без какой-либо дополнительной обёртки — это самый дешёвый по времени выполнения способ добавить оператор для `distinct`-типа.
+
+Список параметров:
+
+- `a, b: HttpCode` — сравниваемые коды.
+
+Пример:
+
+```nim
+echo Http200 == HttpCode(200) # выводит true
+echo Http200 == Http404 # выводит false
+```
+
+---
+
+### 4. `is1xx`
+
+```nim
+func is1xx*(code: HttpCode): bool {.inline, since: (1, 5).}
+```
+
+Что делает: определяет, относится ли код к классу информационных ответов (100–199).
+
+Список параметров:
+
+- `code: HttpCode` — проверяемый код.
+
+Пример:
+
+```nim
+echo is1xx(HttpCode(103)) # выводит true
+echo is1xx(Http200) # выводит false
+```
+
+---
+
+### 5. `is2xx`
+
+```nim
+func is2xx*(code: HttpCode): bool {.inline.}
+```
+
+Что делает: определяет, относится ли код к классу успешных ответов (200–299).
+
+Пример:
+
+```nim
+echo is2xx(Http200) # выводит true
+```
+
+---
+
+### 6. `is3xx`
+
+```nim
+func is3xx*(code: HttpCode): bool {.inline.}
+```
+
+Что делает: определяет, относится ли код к классу перенаправлений (300–399).
+
+Пример:
+
+```nim
+echo is3xx(Http301) # выводит true
+```
+
+---
+
+### 7. `is4xx`
+
+```nim
+func is4xx*(code: HttpCode): bool {.inline.}
+```
+
+Что делает: определяет, относится ли код к классу ошибок клиента (400–499).
+
+Пример:
+
+```nim
+echo is4xx(Http404) # выводит true
+```
+
+---
+
+### 8. `is5xx`
+
+```nim
+func is5xx*(code: HttpCode): bool {.inline.}
+```
+
+Что делает: определяет, относится ли код к классу ошибок сервера (500–599).
+
+Пример:
+
+```nim
+echo is5xx(Http503) # выводит true
+```
+
+---
+
+## VI. Практические рецепты
+
+### 1. Заголовки запроса с несколькими Cookie
+
+```nim
+var headers = newHttpHeaders()
+add(headers, "Cookie", "session=abc")
+add(headers, "Cookie", "theme=dark")
+for key, value in pairs(headers):
+  echo key, ": ", value
+# выводит:
+# cookie: session=abc
+# cookie: theme=dark
+```
+
+Здесь `add` использован дважды подряд для одного и того же ключа именно потому, что `[]=` перезаписал бы предыдущее значение целиком, а `add` аккуратно накапливает список.
+
+---
+
+### 2. Проверка успешности ответа по коду состояния
+
+```nim
+proc describeResponse(code: HttpCode): string =
+  if is2xx(code):
+    result = "успех: " & $code
+  elif is4xx(code):
+    result = "ошибка клиента: " & $code
+  elif is5xx(code):
+    result = "ошибка сервера: " & $code
+  else:
+    result = "прочее: " & $code
+
+echo describeResponse(Http200) # выводит успех: 200 OK
+echo describeResponse(Http404) # выводит ошибка клиента: 404 Not Found
+echo describeResponse(Http503) # выводит ошибка сервера: 503 Service Unavailable
+```
+
+Комбинация предикатов `is2xx`/`is4xx`/`is5xx` с `$` даёт готовую классификацию ответа без ручного сравнения диапазонов чисел.
+
+---
+
+### 3. Разбор сырого заголовка из сокета
+
+```nim
+let rawLines = @["Content-Type: application/json", "Accept: text/html, text/plain"]
+var headers = newHttpHeaders()
+for line in rawLines:
+  let parsed = parseHeader(line)
+  headers[parsed.key] = parsed.value
+
+echo toString(headers["Content-Type"]) # выводит application/json
+echo seq[string](headers["Accept"]) # выводит @["text/html", "text/plain"]
+```
+
+`parseHeader` возвращает готовую пару ключ/список значений, которую можно напрямую передать в `[]=`, не разбирая строку заголовка вручную второй раз.
+
+---
+
+### 4. Слияние заголовков по умолчанию с пользовательскими
+
+```nim
+proc mergeHeaders(defaults, overrides: HttpHeaders): HttpHeaders =
+  result = newHttpHeaders()
+  for key, value in pairs(defaults):
+    add(result, key, value)
+  for key, value in pairs(overrides):
+    if hasKey(result, key):
+      result[key] = value
+    else:
+      add(result, key, value)
+
+let defaults = newHttpHeaders([("Accept", "*/*"), ("User-Agent", "nim-client")])
+let overrides = newHttpHeaders([("Accept", "application/json")])
+let merged = mergeHeaders(defaults, overrides)
+echo toString(merged["Accept"]) # выводит application/json
+echo toString(merged["User-Agent"]) # выводит nim-client
+```
+
+Проверка `hasKey` перед перезаписью нужна, чтобы пользовательский заголовок полностью заменял значение по умолчанию (через `[]=`), а не просто добавлялся к нему (через `add`).
+
+---
+
+### 5. Проверка метода против списка разрешённых
+
+```nim
+proc isMethodAllowed(allowed: set[HttpMethod], methodName: string): bool =
+  try:
+    result = contains(allowed, methodName)
+  except ValueError:
+    result = false
+
+let allowed = {HttpGet, HttpHead, HttpOptions}
+echo isMethodAllowed(allowed, "GET") # выводит true
+echo isMethodAllowed(allowed, "DELETE") # выводит false
+echo isMethodAllowed(allowed, "totally-not-a-method") # выводит false
+```
+
+Обёртка в `try`/`except` нужна из-за граничного поведения `contains`: для произвольной строки, не совпадающей ни с одним значением `HttpMethod`, вызов поднимает `ValueError`, а не просто возвращает false.
+
+---
+
+### 6. Нормализация регистра заголовков перед логированием
+
+```nim
+proc toTitleCaseHeaders(source: HttpHeaders): HttpHeaders =
+  result = newHttpHeaders(titleCase = true)
+  for key, value in pairs(source):
+    add(result, key, value)
+
+let raw = newHttpHeaders([("content-type", "text/html"), ("x-request-id", "42")])
+let normalized = toTitleCaseHeaders(raw)
+echo $normalized # выводит {Content-Type: @["text/html"], X-Request-Id: @["42"]}
+```
+
+Поскольку регистр задаётся один раз при создании объекта через `titleCase`, а не для каждого ключа отдельно, для смены регистра существующих заголовков проще собрать новый объект `HttpHeaders`, чем пытаться отредактировать имеющийся.
+
+---
+
+## VII. Краткая таблица
+
+| Задача | Что использовать |
+| --- | --- |
+| Создать пустой набор заголовков | `newHttpHeaders()` |
+| Создать заголовки сразу из пар | `newHttpHeaders(keyValuePairs)` |
+| Прочитать первое значение как строку | `headers[key]` (с неявным `toString`) |
+| Прочитать все значения ключа | `seq[string](headers[key])` |
+| Прочитать конкретное значение по индексу | `headers[key, i]` |
+| Заменить значения ключа целиком | `headers[key] = value` |
+| Добавить значение, не теряя старые | `add(headers, key, value)` |
+| Удалить ключ | `del(headers, key)` или `headers[key] = @[]` |
+| Проверить наличие ключа без исключений | `hasKey(headers, key)` |
+| Прочитать значение с запасным вариантом | `getOrDefault(headers, key, default)` |
+| Перебрать все пары ключ-значение | `for k, v in pairs(headers)` |
+| Узнать число различных ключей | `len(headers)` |
+| Разобрать сырую строку заголовка | `parseHeader(line)` |
+| Сравнить разобранную версию протокола | `protocol == HttpVer11` |
+| Проверить метод против набора разрешённых | `contains(methods, methodString)` |
+| Классифицировать код состояния | `is1xx`/`is2xx`/`is3xx`/`is4xx`/`is5xx` |
+| Получить текстовое пояснение кода | `$code` |
+
+---
+
+## VIII. Сводка: какую процедуру выбрать
+
+- Нужно создать заголовки → используйте `newHttpHeaders()` или `newHttpHeaders(keyValuePairs)`.
+- Нужно один раз задать значение заголовка, отбросив старое → используйте `[]=`.
+- Нужно накопить несколько значений на один ключ (например, несколько Cookie) → используйте `add`.
+- Нужно прочитать значение, не рискуя поймать исключение при отсутствии ключа → используйте `getOrDefault` или предварительно проверьте `hasKey`.
+- Нужно получить все значения ключа списком, а не только первое → приведите результат `[]` через `seq[string](...)`.
+- Нужно пройтись по всем заголовкам, включая повторяющиеся ключи, → используйте итератор `pairs`.
+- Нужно превратить сырую строку из сокета в пару ключ/значения → используйте `parseHeader`.
+- Нужно сравнить разобранную версию протокола с известной константой → используйте оператор `==` для кортежа протокола и `HttpVersion`.
+- Нужно проверить, разрешён ли метод запроса → используйте `contains` для `set[HttpMethod]`, обернув вызов в `try`/`except ValueError`, если строка метода не гарантированно валидна.
+- Нужно понять, к какому классу относится код ответа → используйте `is1xx`/`is2xx`/`is3xx`/`is4xx`/`is5xx`.
+- Нужно получить человекочитаемое пояснение кода для логов → используйте `$code`.
+- Нужно сравнить два кода состояния → используйте `==` для `HttpCode`.
